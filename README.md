@@ -54,7 +54,7 @@ By utilizing **VPN local loopback reflection (`10.7.0.1 = reflect`)** in a compa
 |  |  • dtuhidd / universalhidservice        (Hardware Touch Input)  |  |
 |  |  • com.apple.coredevice.appservice      (Process Control / Run) |  |
 |  |  • com.apple.mobile.house_arrest        (App Sandbox Extract)   |  |
-|  |  • com.apple.mobile.MCInstall           (Silent Profile Mgmt)   |  |
+|  |  • com.apple.mobile.MCInstall           (Profile Staging & Mgmt) |  |
 |  |  • com.apple.crashreportcopymobile      (Crash IPS Reports)     |  |
 |  |  • com.apple.webinspector               (WebKit Remote Inspect) |  |
 |  +-----------------------------------------------------------------+  |
@@ -86,7 +86,7 @@ By utilizing **VPN local loopback reflection (`10.7.0.1 = reflect`)** in a compa
 | **`cdtk-doctor`** | `diagnostic` + `self-repair` | **Health Doctor**: Audits runtimes, Python modules, pairing files (0600), loopback connectivity, and screen lock status with copy-paste fixes |
 | **`cdtk-install`** | `installation_proxy` + `zsign` | **On-Device Sideloading**: Direct signing and installation of IPAs without a computer |
 | **`cdtk-ctrl`** | `dtuhidd` + `appservice` | **Hardware Automation**: Injects screen taps, swipes, process orchestration, and app launch |
-| **`cdtk-profile`** | `MCInstall` | **Profile Management**: Installs and removes `.mobileconfig` profiles silently without Safari prompts or passcode dialogs |
+| **`cdtk-profile`** | `MCInstall` | **Profile Management**: Dispatches and manages `.mobileconfig` profiles via MCInstall directly without Safari redirects; silent for supervised devices (with keybag), requires one-time passcode confirmation in Settings on standard personal devices |
 | **`cdtk-fs`** | `house_arrest` + `afc` | **Sandbox & Media Access**: Inspects container filesystems (Documents/Library/SQLite) of sideloaded apps and manages DCIM |
 | **`cdtk-diag`** | `diagnostics_relay` + `syslog` | **Hardware Diagnostics**: Reads factory designed capacity, true battery cycle counts, voltage, and real-time kernel syslog |
 | **`cdtk-crash`** | `crashreportcopymobile` | **Crash Reporter**: Pulls and structures `.ips` crash logs, exception codes, and stack traces |
@@ -184,11 +184,11 @@ cdtk-install install app.ipa -b com.example.demo -n "My App" # Sign & install
 cdtk-install uninstall com.example.demo -y # Clean native uninstall
 ```
 
-### 4. Silent Profile Installation (`cdtk-profile`)
+### 4. Configuration Profile Dispatch & Removal (`cdtk-profile`)
 ```bash
 cdtk-profile list                    # List installed configuration profiles
-cdtk-profile install cert.mobileconfig -y # Silently install profile
-cdtk-profile remove <PayloadIdentifier> -y # Silently remove profile
+cdtk-profile install cert.mobileconfig -y # Dispatch profile directly without Safari (confirm in Settings for personal devices)
+cdtk-profile remove <PayloadIdentifier> -y # Remove profile silently without additional dialogs
 ```
 
 ### 5. Crash Log Extraction (`cdtk-crash`)

@@ -54,7 +54,7 @@
 |  |  • dtuhidd / universalhidservice        (底层物理触控注入)       |  |
 |  |  • com.apple.coredevice.appservice      (进程监控与应用调度)     |  |
 |  |  • com.apple.mobile.house_arrest        (应用沙盒穿透提取)       |  |
-|  |  • com.apple.mobile.MCInstall           (描述文件免确认安装管理) |  |
+|  |  • com.apple.mobile.MCInstall           (描述文件底层下发与管理) |  |
 |  |  • com.apple.crashreportcopymobile      (系统崩溃 IPS 日志透视)  |  |
 |  |  • com.apple.webinspector               (全局 WebKit 远程调试)   |  |
 |  +-----------------------------------------------------------------+  |
@@ -88,7 +88,7 @@
 | **`cdtk-doctor`** | `diagnostic` + `self-repair` | **环境体检医生**：一键秒级检测系统依赖、Python 模块、配对凭据合规性、本地回环通道与亮屏握手，对异常项输出精准修复建议 |
 | **`cdtk-install`** | `installation_proxy` + `zsign` | **免电脑开发侧载**：自动识别 IPA，本地 P12 证书快速重签，秒级直装进 iOS |
 | **`cdtk-ctrl`** | `dtuhidd` + `appservice` | **硬件级自动化控制**：枚举物理输入设备，向屏幕注入真实物理按压与滑动流，进程监控与 App 冷启动 |
-| **`cdtk-profile`** | `MCInstall` | **描述文件管理**：免跳转 Safari、免输入密码，一键安装/移除描述文件与自签根证书 |
+| **`cdtk-profile`** | `MCInstall` | **描述文件管理**：免 Safari 下载跳转，直接经 MCInstall 协议把 `.mobileconfig` 送抵系统安装队列；受监管设备（含 keybag）可零弹窗静默安装，普通个人设备仍需机主在设置中确认一次锁屏密码 |
 | **`cdtk-fs`** | `house_arrest` + `afc` | **沙盒穿透与媒体管理**：免越狱穿透提取自签/开发 App 的全量容器（Documents/Library），管理媒体分区 |
 | **`cdtk-diag`** | `diagnostics_relay` + `syslog` | **硬件自检与系统日志**：直读电池出厂设计容量、真实物理最大容量、放电循环次数；实时捕获内核 syslog |
 | **`cdtk-crash`** | `crashreportcopymobile` | **崩溃与闪退透视器**：秒级抓取系统全量 `.ips` 崩溃日志，结构化解析异常代码与触发线程 Backtrace |
@@ -186,11 +186,11 @@ cdtk-install install app.ipa -b com.example.demo -n "我的分身" # 自动重�
 cdtk-install uninstall com.example.demo -y # 原生反注册干净卸载
 ```
 
-### 4. 描述文件免跳转静默管理 (`cdtk-profile`)
+### 4. 描述文件下发与移除 (`cdtk-profile`)
 ```bash
 cdtk-profile list                    # 枚举系统已安装的描述文件
-cdtk-profile install cert.mobileconfig -y # 静默安装证书或配置
-cdtk-profile remove <PayloadIdentifier> -y # 静默移除指定的描述文件
+cdtk-profile install cert.mobileconfig -y # 免 Safari 跳转下发描述文件（个人设备需在设置确认密码，监管设备可静默）
+cdtk-profile remove <PayloadIdentifier> -y # 静默移除指定的描述文件（无需二次确认弹窗）
 ```
 
 ### 5. 系统崩溃日志分析 (`cdtk-crash`)
