@@ -1,0 +1,11 @@
+#!name = Local Device Loopback & Tunnel (CoreDevice RSD)
+#!desc = iPhone 本机自回环隧道支持。捕获发往 10.7.0.1 的配对数据流并反射，配合 Minis 用户态协议栈实现单机免电脑打通 iOS 17+ CoreDevice RSD 服务。
+#!category = Minis Toolkit
+#!system = ios
+
+[General]
+tun-included-routes = %APPEND% 10.7.0.1/32
+always-raw-tcp-keywords = %APPEND% "Content-Type: application/pairing+tlv8"
+
+[IP Rewrite]
+10.7.0.1 = reflect

@@ -1,0 +1,35 @@
+[
+  [
+    "com.apple.MobilePhone",
+    "com.apple.MobileSMS",
+    "com.apple.mobilesafari",
+    "com.apple.Music"
+  ],
+  [
+    "com.apple.camera",
+    "com.apple.mobileslideshow",
+    "com.apple.Preferences",
+    "com.apple.AppStore"
+  ],
+  [
+    {
+      "displayName": "AI 智脑",
+      "iconLists": [
+        [
+          "com.openai.chat",
+          "com.anthropic.claude",
+          "com.deepseek.chat"
+        ]
+      ]
+    },
+    {
+      "displayName": "系统开发",
+      "iconLists": [
+        [
+          "app.ish.iSH",
+          "com.github.GitHub"
+        ]
+      ]
+    }
+  ]
+]
