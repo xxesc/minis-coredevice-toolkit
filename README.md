@@ -76,6 +76,8 @@ By utilizing **VPN local loopback reflection (`10.7.0.1 = reflect`)** in a compa
 5. **Truthful Compatibility**:
    - **Verified**: `iOS 18.0+` (Tested end-to-end on physical hardware);
    - **Experimental**: `iOS 17.0 ~ 17.7` (Certain sub-versions may bind exclusively to IPv6 or exhibit port drift).
+6. **Upstream SDK Compatibility**:
+   - `cdtk-install` probes capabilities instead of hard-coding method names: it prefers `InstallationProxyService.install_from_local(package_path, "Install")` (pymobiledevice3 >= 11.x) and falls back to the legacy `install(ipa_path)`. Upstream renaming `install()` no longer breaks the tool with an `AttributeError`.
 
 ---
 

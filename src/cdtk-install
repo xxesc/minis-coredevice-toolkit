@@ -17,6 +17,31 @@ from pathlib import Path
 from coredevice_session import CoreDeviceSession
 from pymobiledevice3.services.installation_proxy import InstallationProxyService
 
+async def push_install(installer, ipa_path: str):
+    """
+    跨版本兼容的 installation_proxy 安装调用。
+
+    pymobiledevice3 在 11.x 移除了 InstallationProxyService.install(ipa_path)，
+    改为 install_from_local(package_path, cmd="Install")：内部会经 AFC 上传到
+    /PublicStaging/pymobiledevice3 再走 send_package，失败时抛 AppInstallError。
+    这里按能力探测，两种接口都支持，避免 SDK 一升级工具就直接 AttributeError。
+    """
+    fn = getattr(installer, "install_from_local", None)
+    if fn is not None:
+        await fn(Path(ipa_path), "Install")
+        return "Install(install_from_local)"
+
+    fn = getattr(installer, "install", None)
+    if fn is not None:
+        await fn(ipa_path)
+        return "Install(legacy install)"
+
+    raise RuntimeError(
+        "当前 pymobiledevice3 的 InstallationProxyService 既无 install_from_local 也无 install，"
+        "请升级 pymobiledevice3 或检查安装是否完整"
+    )
+
+
 def find_signing_assets(cert_arg=None, prov_arg=None, pass_arg=None):
     """
     定位签名资产 (P12 证书、Provisioning Profile 与密码)。
@@ -202,8 +227,8 @@ async def cmd_install(args):
         async with CoreDeviceSession() as sess:
             installer = InstallationProxyService(sess.rsd)
             print(f"⚡ 正在向系统发送安装指令 (Stream: {os.path.basename(final_ipa)})...")
-            res = await installer.install(final_ipa)
-            print(f"🎉 安装指令执行完成！返回状态: {res}")
+            method = await push_install(installer, final_ipa)
+            print(f"🎉 安装完成（{method}）")
             print(f"✨ 应用已成功部署至 iOS 系统桌面。")
     finally:
         if tmp_signed and os.path.exists(tmp_signed):

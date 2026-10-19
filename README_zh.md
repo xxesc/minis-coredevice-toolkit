@@ -78,6 +78,8 @@
 5. **系统版本实事求是说明**：
    - **已实测验证 (Verified)**：`iOS 18.0+`（作者真机验证）；
    - **实验性支持 (Experimental)**：`iOS 17.0 ~ 17.7`（早期小版本系统 `remoted` 可能仅绑定 IPv6 Link-Local 或存在端口漂移，欢迎社区测试反馈）。
+6. **上游 SDK 兼容性 (SDK Compatibility)**：
+   - `cdtk-install` 对 `installation_proxy` 的调用采用**能力探测**而非写死方法名：优先走 `InstallationProxyService.install_from_local(package_path, "Install")`（pymobiledevice3 ≥ 11.x），自动回退到旧版 `install(ipa_path)`。避免上游把 `install()` 重命名后，工具在一次 `AttributeError` 里直接崩掉。
 
 ---
 
