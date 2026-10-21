@@ -176,10 +176,10 @@ class Doctor:
             print(f"  {FAIL} {err}")
             self.errors.append((
                 "Local loopback reflection not active" if not is_zh else "本地回环未打通或未生效",
-                ("Ensure Surge has 10.7.0.1 reflect enabled.\n"
-                 "      Reference guide: references/SURGE_LOOPBACK.md") if not is_zh else
-                ("请检查 Surge 是否已开启 10.7.0.1 回环配置；\n"
-                 "      参考手册: references/SURGE_LOOPBACK_zh.md")
+                ("Ensure Surge (or Loon / Egern) has 10.7.0.1 reflect enabled.\n"
+                 "      Reference guide: references/MULTI_PROXY_GUIDE.md") if not is_zh else
+                ("请检查 Surge（或 Loon / Egern）是否已开启 10.7.0.1 回环模块；\n"
+                 "      参考手册: references/MULTI_PROXY_GUIDE.md")
             ))
             return False
 

@@ -87,7 +87,8 @@ By utilizing **VPN local loopback reflection (`10.7.0.1 = reflect`)** in a compa
 | :--- | :--- | :--- |
 | **`cdtk-doctor`** | `diagnostic` + `self-repair` | **Health Doctor**: Audits runtimes, Python modules, pairing files (0600), loopback connectivity, and screen lock status with copy-paste fixes |
 | **`cdtk-install`** | `installation_proxy` + `zsign` | **On-Device Sideloading**: Direct signing and installation of IPAs without a computer |
-| **`cdtk-ctrl`** | `dtuhidd` + `appservice` | **Hardware Automation**: Injects screen taps, swipes, process orchestration, and app launch |
+| **`cdtk-ctrl`** | `dtuhidd` + `appservice` | **Hardware Automation**: Injects screen taps, swipes, process orchestration, and app launch (with automatic banner alerts and reason dispatch) |
+| **`cdtk-notify`** | `apple-notification` | **Task Lifecycle Notifications**: Pushes native banner notices before app launch, during progress, and on task completion for instant tap-to-switch navigation |
 | **`cdtk-profile`** | `MCInstall` | **Profile Management**: Dispatches and manages `.mobileconfig` profiles via MCInstall directly without Safari redirects; silent for supervised devices (with keybag), requires one-time passcode confirmation in Settings on standard personal devices |
 | **`cdtk-fs`** | `house_arrest` + `afc` | **Sandbox & Media Access**: Inspects container filesystems (Documents/Library/SQLite) of sideloaded apps and manages DCIM |
 | **`cdtk-diag`** | `diagnostics_relay` + `syslog` | **Hardware Diagnostics**: Reads factory designed capacity, true battery cycle counts, voltage, and real-time kernel syslog |

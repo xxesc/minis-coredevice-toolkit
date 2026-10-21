@@ -22,6 +22,32 @@ from pymobiledevice3.remote.core_device.hid_service import (
 )
 
 async def cmd_launch(args):
+    import subprocess
+    
+    # 提取友好应用名
+    bundle = args.bundle_id
+    friendly_name = bundle.split(".")[-1].capitalize()
+    if "surge" in bundle.lower():
+        friendly_name = "Surge 网络代理"
+    elif "minis" in bundle.lower():
+        friendly_name = "Minis"
+    elif "wechat" in bundle.lower():
+        friendly_name = "微信"
+        
+    op_desc = getattr(args, "reason", None) or "正在执行自动化/环境检测"
+    
+    # 调起前发送操作横幅通知
+    if not getattr(args, "no_notify", False):
+        try:
+            subprocess.run([
+                "apple-notification", "schedule",
+                "--title", f"🤖 妹妹正在操作 {friendly_name}",
+                "--body", f"📌 当前步骤: {op_desc}（请先勿触碰屏幕，完成后会自动弹窗提醒切回）",
+                "--after", "0"
+            ], capture_output=True, timeout=3)
+        except Exception:
+            pass
+
     print(f"⚡ 正在通过 CoreDevice RSD 拉起应用: {args.bundle_id}...")
     async with CoreDeviceSession() as s:
         async with AppServiceService(s.rsd) as app_svc:
@@ -114,6 +140,8 @@ def main():
     p_launch = subparsers.add_parser("launch", help="通过 CoreDevice 原生拉起任意 App")
     p_launch.add_argument("bundle_id", help="应用 Bundle Identifier (如 com.meituan.imeituan)")
     p_launch.add_argument("--no-kill", action="store_true", help="不强制杀死已有实例")
+    p_launch.add_argument("-r", "--reason", "--op", dest="reason", help="本次操作的具体目的与说明（用于向系统弹出提示横幅）")
+    p_launch.add_argument("--no-notify", action="store_true", help="不发送系统横幅通知")
 
     # procs
     p_procs = subparsers.add_parser("procs", help="列出当前运行的 App 与进程")

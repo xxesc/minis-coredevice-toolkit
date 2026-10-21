@@ -89,7 +89,8 @@
 | :--- | :--- | :--- |
 | **`cdtk-doctor`** | `diagnostic` + `self-repair` | **环境体检医生**：一键秒级检测系统依赖、Python 模块、配对凭据合规性、本地回环通道与亮屏握手，对异常项输出精准修复建议 |
 | **`cdtk-install`** | `installation_proxy` + `zsign` | **免电脑开发侧载**：自动识别 IPA，本地 P12 证书快速重签，秒级直装进 iOS |
-| **`cdtk-ctrl`** | `dtuhidd` + `appservice` | **硬件级自动化控制**：枚举物理输入设备，向屏幕注入真实物理按压与滑动流，进程监控与 App 冷启动 |
+| **`cdtk-ctrl`** | `dtuhidd` + `appservice` | **硬件级自动化控制**：枚举物理输入设备，向屏幕注入真实物理按压与滑动流，进程监控与 App 冷启动（支持 `-r / --reason` 自动切屏横幅告警） |
+| **`cdtk-notify`** | `apple-notification` | **任务生命周期横幅通知**：在调起 App 前、执行耗时步骤中、以及任务完结时主动推送系统横幅，支持一键点击横幅秒级切回 Minis 对话 |
 | **`cdtk-profile`** | `MCInstall` | **描述文件管理**：免 Safari 下载跳转，直接经 MCInstall 协议把 `.mobileconfig` 送抵系统安装队列；受监管设备（含 keybag）可零弹窗静默安装，普通个人设备仍需机主在设置中确认一次锁屏密码 |
 | **`cdtk-fs`** | `house_arrest` + `afc` | **沙盒穿透与媒体管理**：免越狱穿透提取自签/开发 App 的全量容器（Documents/Library），管理媒体分区 |
 | **`cdtk-diag`** | `diagnostics_relay` + `syslog` | **硬件自检与系统日志**：直读电池出厂设计容量、真实物理最大容量、放电循环次数；实时捕获内核 syslog |
