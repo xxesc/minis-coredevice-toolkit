@@ -1,267 +1,178 @@
-# CoreDevice ToolKit (CDTK) 📱⚡
+# CDTK — CoreDevice ToolKit
 
-> **iPhone 单机免电脑、免越狱底层系统控制与开发者工具箱**  
-> *Native, Computer-less & Non-Jailbroken iOS System Automation, Sideloading, Diagnostics & Inspection Suite.*
+**在 iPhone 单机上、不需要电脑也不需要越狱，直接用 `cdtk-*` 命令行操作 CoreDevice（RSD）的系统服务。**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![MinisSkills PR](https://img.shields.io/badge/MinisSkills-PR%20%23105%20under%20review-yellow.svg)](https://github.com/OpenMinis/MinisSkills/pull/105)
-[![Platform: iOS 18+ (Verified) | iOS 17.x (Experimental)](https://img.shields.io/badge/iOS-18.0%2B%20(Verified)%20%7C%2017.x%20(Exp)-blue.svg)]()
-[![Namespace: cdtk](https://img.shields.io/badge/Namespace-cdtk--*-green.svg)]()
-[![Security: Hardened](https://img.shields.io/badge/Security-Hardened%20(0700%20%7C%20stdin%20PSK)-red.svg)]()
-[![Loopback: Surge](https://img.shields.io/badge/Loopback-Surge%20(10.7.0.1%20reflect)-orange.svg)]()
+[![Tested on iOS 27.3](https://img.shields.io/badge/Tested-iOS%2027.3-blue.svg)]()
+[![Host: Minis / iSH](https://img.shields.io/badge/Host-Minis%20%2F%20iSH-green.svg)]()
 
-**[English](README.md)** | **[中文说明文档](README_zh.md)**
-
-> 本工具链已以 PR 形式提交至 **[OpenMinis/MinisSkills](https://github.com/OpenMinis/MinisSkills/pull/105)**（审核中），运行于 iOS 原生 AI 与 Linux 容器宿主 **[Minis](https://github.com/OpenMinis)**（iSH / Alpine Linux）环境中。
+**[English](README.md) | 中文**
 
 ---
 
-## 🌟 简介 (Overview)
+## 这个仓库是什么
 
-在以往的 iOS 体系中，诸如**本地侧载直装开发应用、模拟硬件物理触控、穿透提取自签沙盒数据、读取电池真实物理循环、WebKit 远程页面调试**等操作，要么需要一台连着 USB 数据线的 Mac/PC 电脑，要么需要设备处于越狱状态。
+一组跑在 Minis（iSH / Alpine Linux）里的命令行工具，通过本地回环 + TLS-PSK 桥接接入 iOS 的
+CoreDevice RSD 服务，把「装包、注入触控、读沙盒、看崩溃日志、管理描述文件、读电池数据」这些
+通常需要连电脑或越狱才能做的事，变成一条命令。
 
-**`coredevice-toolkit` (`cdtk`)** 彻底打破了这一限制：
-通过在 iOS 内部借助 **VPN 本地回环反射 (`10.7.0.1 = reflect`)**，配合 **Node.js TLS-PSK 桥接** 与 **`pmd-pytcp` 纯用户态协议栈**，在 iPhone 单机内部构建起一条“插回手机自己的虚拟数据线”。直接在 **[Minis](https://github.com/OpenMinis) (iSH / Alpine Linux)** 环境中与苹果系统底层 CoreDevice RSD（Remote Service Discovery）守护进程安全握手，将全套系统级底层开发者能力沉淀为纯粹、模块化的 Linux CLI 工具矩阵（`cdtk-*`）。
+**边界（先说清楚）**
+
+- 不是越狱：拿不到 root，也读不了系统分区；能做的只是 RSD 暴露出来的那些服务。
+- 需要 Surge（或等价方案）把 `10.7.0.1` 反射回本机，需要一个配对文件（pairing record）。
+- 实测环境：iPhone 14（iPhone14,7）/ iOS 27.3，宿主 Minis 1.16。更早的 iOS 版本没有在本仓库验证过。
+- 上游接口随时可能变：`pymobiledevice3` 升级后某些调用会失效，工具会尽量做能力探测，但不保证。
 
 ---
 
-## 🏗️ 架构拓扑 (Architecture)
+## 原理（一段话）
+
+`cdtk-*` 启动 → 从配对记录取密钥 → 起一个 Node.js TLS-PSK 桥接进程 → 在 `pmd-pytcp` 纯用户态协议栈上
+建立到 `10.7.0.1:<rsd_port>` 的隧道 → 用 RSD 握手拿到服务列表 → 通过 `RemoteXPC` 调具体服务
+（`installation_proxy` / `dtuhidd` / `house_arrest` / `crashreportcopymobile` …）→ 命令结束即拆隧道。
 
 ```text
-+-----------------------------------------------------------------------+
-|                             iPhone (iOS)                              |
-|                                                                       |
-|  +---------------------------+       +-----------------------------+  |
-|  |       Minis / iSH         |       |    VPN / 回环网卡接口        |  |
-|  |     (用户态 Linux 环境)    |       |  (Surge 本地回环反射)        |  |
-|  |  -----------------------  |       |  [IP Rewrite / 本地反射]    |  |
-|  |   cdtk-* 工具链矩阵       |       |  10.7.0.1 = reflect         |  |
-|  |            |              |       +--------------+--------------+  |
-|  |            v              |                      ^                 |
-|  |   coredevice_session.py   |                      |                 |
-|  |   (0700 沙盒 + stdin PSK) |                      |                 |
-|  |            |              |                      |                 |
-|  |            v              |                      |                 |
-|  |   pmd-pytcp 用户态协议栈   |======================+                 |
-|  |  (Userspace TCP / Tunnel) |      (虚拟本地自回环隧道数据流)           |
-|  +------------+--------------+                                        |
-|               |                                                       |
-|               v                                                       |
-|  +-----------------------------------------------------------------+  |
-|  |            iOS CoreDevice RSD 守护服务集群 (RemoteXPC)           |  |
-|  |  -------------------------------------------------------------  |  |
-|  |  • com.apple.mobile.installation_proxy  (应用安装、侧载与卸载)   |  |
-|  |  • dtuhidd / universalhidservice        (底层物理触控注入)       |  |
-|  |  • com.apple.coredevice.appservice      (进程监控与应用调度)     |  |
-|  |  • com.apple.mobile.house_arrest        (应用沙盒穿透提取)       |  |
-|  |  • com.apple.mobile.MCInstall           (描述文件底层下发与管理) |  |
-|  |  • com.apple.crashreportcopymobile      (系统崩溃 IPS 日志透视)  |  |
-|  |  • com.apple.webinspector               (全局 WebKit 远程调试)   |  |
-|  +-----------------------------------------------------------------+  |
-+-----------------------------------------------------------------------+
+Minis (iSH)                   回环                      iOS 内核
+cdtk-* ── coredevice_session ──► 10.7.0.1:49xxx ──► remoted ──► RSD 服务
+        └ Node TLS-PSK 桥接 + pytcp 用户态栈
 ```
 
 ---
 
-## 🛡️ 安全加固与实事求是规范 (Security & Truthfulness)
+## 前置条件
 
-本工具箱在实现黑科技的同时，严格恪守工业级安全标准与实事求是的技术边界：
-
-1. **零进程泄密 (No Command-line Leaks)**：
-   - TLS-PSK 密钥严禁通过命令行参数 (`argv`) 传递，彻底杜绝 `ps -ef` 进程嗅探。PSK 统一由主进程通过私密 `stdin` 管道直接投递给 Node.js 桥接进程。
-2. **私有临时沙盒隔离 (Private Sandboxing)**：
-   - 彻底废除固定 `/tmp` 文件，所有 Unix Domain Socket 通信均建立在 `tempfile.mkdtemp(0700)` 属主独占隔离目录内，退出时强制双重清理，防劫持、防残留。
-3. **配对凭证 Ed25519 权限检测与自愈**：
-   - 配对记录包含核心签名私钥。工具链内置权限健康检测，当发现外部挂载卷权限过宽（`0644`）时，自动将其安全复制隔离进属主独占私有沙盒 `/root/.cdtk/pairing/` 并锁定为 `0600`。
-4. **单点 `/32` 路由范围隔离**：
-   - 路由规则 `10.7.0.1/32` 仅捕获该单个虚拟 IP，不有意捕获局域网或互联网流量；自定义规则集请自行核对顺序。
-5. **系统版本实事求是说明**：
-   - **已实测验证 (Verified)**：`iOS 18.0+`（作者真机验证）；
-   - **实验性支持 (Experimental)**：`iOS 17.0 ~ 17.7`（早期小版本系统 `remoted` 可能仅绑定 IPv6 Link-Local 或存在端口漂移，欢迎社区测试反馈）。
-6. **上游 SDK 兼容性 (SDK Compatibility)**：
-   - `cdtk-install` 对 `installation_proxy` 的调用采用**能力探测**而非写死方法名：优先走 `InstallationProxyService.install_from_local(package_path, "Install")`（pymobiledevice3 ≥ 11.x），自动回退到旧版 `install(ipa_path)`。避免上游把 `install()` 重命名后，工具在一次 `AttributeError` 里直接崩掉。
+1. iOS 设备，已开启「开发者模式」；
+2. 宿主 Minis（iSH / Alpine Linux，aarch64）；
+3. Surge ≥ 5.23 或等价回环方案，`10.7.0.1` 反射到本机 —— 见 [Surge 回环指南](references/SURGE_LOOPBACK_zh.md)；
+4. 一个 RemotePairing 格式的配对文件，放在 `~/.cdtk/pairing/`（0600）—— 见 [配对指南](references/PAIRING_GUIDE_zh.md)。
 
 ---
 
-## 🛠️ 工具矩阵 (`cdtk-*`)
-
-| 工具命令 | 底层服务 / 协议 | 核心能力说明 |
-| :--- | :--- | :--- |
-| **`cdtk-doctor`** | `diagnostic` + `self-repair` | **环境体检医生**：一键秒级检测系统依赖、Python 模块、配对凭据合规性、本地回环通道与亮屏握手，对异常项输出精准修复建议 |
-| **`cdtk-install`** | `installation_proxy` + `zsign` | **免电脑开发侧载**：自动识别 IPA，本地 P12 证书快速重签，秒级直装进 iOS |
-| **`cdtk-ctrl`** | `dtuhidd` + `appservice` | **硬件级自动化控制**：枚举物理输入设备，向屏幕注入真实物理按压与滑动流，进程监控与 App 冷启动（支持 `-r / --reason` 自动切屏横幅告警） |
-| **`cdtk-notify`** | `apple-notification` | **任务生命周期横幅通知**：在调起 App 前、执行耗时步骤中、以及任务完结时主动推送系统横幅，支持一键点击横幅秒级切回 Minis 对话 |
-| **`cdtk-profile`** | `MCInstall` | **描述文件管理**：免 Safari 下载跳转，直接经 MCInstall 协议把 `.mobileconfig` 送抵系统安装队列；受监管设备（含 keybag）可零弹窗静默安装，普通个人设备仍需机主在设置中确认一次锁屏密码 |
-| **`cdtk-fs`** | `house_arrest` + `afc` | **沙盒穿透与媒体管理**：免越狱穿透提取自签/开发 App 的全量容器（Documents/Library），管理媒体分区 |
-| **`cdtk-diag`** | `diagnostics_relay` + `syslog` | **硬件自检与系统日志**：直读电池出厂设计容量、真实物理最大容量、放电循环次数；实时捕获内核 syslog |
-| **`cdtk-crash`** | `crashreportcopymobile` | **崩溃与闪退透视器**：秒级抓取系统全量 `.ips` 崩溃日志，结构化解析异常代码与触发线程 Backtrace |
-| **`cdtk-inspect`** | `webinspector` | **WebKit 远程穿透**：列出系统挂载的 WebKit 实例与公开页面，注入执行 JS、提取 Cookies 与 Storage |
-| **`cdtk-springboard`** | `springboard.iconstate` | **主屏桌面编排**：备份、提取、编排与热恢复 iOS 桌面主屏图标和文件夹布局 |
-| **`cdtk-proc`** | `dtservicehub` + `processcontrol` | **进程控制与内存豁免**：免越狱为目标应用申请内核级 Jetsam 内存查杀豁免，注入进程暂停/恢复信号 |
-
----
-
-## 🚀 快速上手 (Getting Started)
-
-### 1. 前置条件 (Prerequisites)
-
-1. **iOS 设备**：运行 iOS 18.0+（或 iOS 17.x），系统【设置 ➡️ 隐私与安全性】已开启「开发者模式」；
-2. **Minis App**：提供 Alpine Linux 运行环境；
-3. **本地回环基建**：在 **Surge** 中开启 `10.7.0.1 = reflect`（详见 [Surge 本地回环指南](references/SURGE_LOOPBACK_zh.md)）；
-4. **配对文件 (`pairing.plist`)**：通过电脑或 SideStore/Jitterbug 导出配对记录，放置于 `/var/minis/workspace/cdtk/`（详见 [配对指南](references/PAIRING_GUIDE_zh.md)）。
-
----
-
-### 2. 免编译极速初始化安装
-
-在终端中执行：
+## 安装
 
 ```bash
-git clone https://github.com/xxesc/minis-coredevice-toolkit.git /var/minis/workspace/coredevice-toolkit
-cd /var/minis/workspace/coredevice-toolkit/src
+git clone https://github.com/xxesc/minis-coredevice-toolkit.git
+cd minis-coredevice-toolkit/src
 sh setup.sh
 ```
 
-*(基于 Alpine 预编译包与纯 Python 协议栈，规避 gcc 与 sslpsk-pmd3 编译；实际耗时取决于网络。)*
-
----
-
-### 3. 一键环境体检诊断 (`cdtk-doctor`)
-
-执行内置的体检医生（支持 `--zh` 中文输出）：
+`setup.sh` 会装依赖（`pymobiledevice3` 走 `--no-deps`，跳过需要编译的 `sslpsk-pmd3`），把脚本装到 `/usr/local/bin`。
+装完先跑体检：
 
 ```bash
 cdtk-doctor --zh
 ```
 
-示例输出（示意数据，已脱敏）：
-```text
-🩺 CoreDevice RSD 极客工具链环境体检医生 (cdtk-doctor)
-==================================================================
-
-1. 检查基础系统运行时与命令依赖:
-  ✅ [通过] Node.js 运行时: /usr/bin/node (v22.23.2)
-  ✅ [通过] Python 运行时: /usr/bin/python3 (3.12.15)
-
-2. 检查 Python 核心协议栈模块:
-  ✅ [通过] Python 模块 [cryptography] 已就绪
-  ✅ [通过] Python 模块 [pmd_pytcp] 已就绪
-  ✅ [通过] Python 模块 [pymobiledevice3] 已就绪
-  ✅ [通过] Python 模块 [coredevice_session] 已就绪
-
-3. 检查设备配对凭据 (.plist):
-  ✅ [通过] 发现配对文件: /root/.cdtk/pairing/my_device.plist
-  ✅ [通过] 配对文件安全权限合规 (0600 属主独占)
-  ✅ [通过] 设备标识符 (UDID): 00008110-001A2B3C4D5E6F7A
-
-4. 检查本地回环网络通道 (10.7.0.1:49152):
-  ✅ [通过] 本地回环端口连通成功 (10.7.0.1:49152)
-
-5. 检查与 iOS 内核 Remote Services 握手通信:
-  ✅ [通过] 苹果底层 Pair-Verify 协议握手成功 (PSK 协商正常)
-  ✅ [通过] iPhone 处于解锁亮屏与开发者就绪状态
-
-==================================================================
-🎉 全套环境体检通过，CDTK 已就绪。
-```
+它逐项检查：Node / Python 运行时、Python 模块、配对文件与权限、回环端口连通性、以及一次真实 RSD 握手。
+有问题会直接给修复命令。
 
 ---
 
-## 📖 常用指令速查 (CLI Cheat Sheet)
+## 工具矩阵
 
-### 1. 电池硬件与电源状态 (`cdtk-diag`)
-```bash
-cdtk-diag hw
-```
-
-### 2. 进程生命周期与硬件触控 (`cdtk-ctrl`)
-```bash
-cdtk-ctrl procs --apps-only          # 列出所有正在运行的前后台 App
-cdtk-ctrl launch com.apple.Preferences # 冷启动系统设置
-cdtk-ctrl tap 300 500                # 向屏幕物理坐标 (300, 500) 注入真实硬件点击
-cdtk-ctrl swipe 300 800 300 200      # 硬件级平滑滑动轨迹流
-```
-
-### 3. 免电脑侧载与自签名 (`cdtk-install`)
-```bash
-cdtk-install list                    # 枚举已安装的第三方应用
-cdtk-install install app.ipa -b com.example.demo -n "我的分身" # 自动重签并直装
-cdtk-install uninstall com.example.demo -y # 原生反注册干净卸载
-```
-
-### 4. 描述文件下发与移除 (`cdtk-profile`)
-```bash
-cdtk-profile list                    # 枚举系统已安装的描述文件
-cdtk-profile install cert.mobileconfig -y # 免 Safari 跳转下发描述文件（个人设备需在设置确认密码，监管设备可静默）
-cdtk-profile remove <PayloadIdentifier> -y # 静默移除指定的描述文件（无需二次确认弹窗）
-```
-
-### 5. 系统崩溃日志分析 (`cdtk-crash`)
-```bash
-cdtk-crash list -n 10                # 列出最近 10 份崩溃与诊断日志
-cdtk-crash view <crash_file.ips>     # 结构化深度解析异常代码与线程堆栈
-```
+| 命令 | 用到的服务 | 能做什么 |
+|---|---|---|
+| `cdtk-doctor` | 体检 | 环境自检：依赖、配对凭据、回环、真实握手；顺手清掉一天以上的残留会话目录 |
+| `cdtk-install` | `installation_proxy` | 列出已装应用、签名后直接装 IPA、卸载 |
+| `cdtk-ctrl` | `dtuhidd` / `appservice` | 枚举进程、拉起 App、注入真实触控（像素坐标）与滑动 |
+| `cdtk-notify` | `apple-notification` | 调起 App 前后推系统横幅 |
+| `cdtk-profile` | `MCInstall` | 列出 / 下发 / 移除描述文件（个人设备仍需在设置里确认一次） |
+| `cdtk-fs` | `house_arrest` + AFC | 穿透已授权 App 的沙盒（Documents / Library）、媒体分区读写 |
+| `cdtk-diag` | `diagnostics_relay` / `syslog` | 读电池设计容量、真实容量、循环次数；实时抓内核日志 |
+| `cdtk-crash` | `crashreportcopymobile` | 列出并解析 `.ips` 崩溃与资源报告 |
+| `cdtk-inspect` | `webinspector` | 列出 WebKit 页面、注入 JS、导出 Cookies / Storage |
+| `cdtk-springboard` | `springboard.iconstate` | 备份 / 下发主屏布局（Dock、各页、文件夹） |
+| `cdtk-proc` | `processcontrol` | 给目标进程加 Jetsam 免疫、发信号 |
 
 ---
 
-## 🩺 排障速查 (Troubleshooting)
+## 常用命令
 
-**Q：突然全线报 `ConnectionRefusedError 10.7.0.1:49152`，或者“连上了但没回应”？**
+```bash
+cdtk-diag hw                              # 电池健康
+cdtk-ctrl procs --apps-only               # 正在跑的 App
+cdtk-ctrl launch com.apple.Preferences    # 拉起系统设置
+cdtk-ctrl tap 585 642                     # 像素坐标点击（原生竖屏，与截图一致）
+cdtk-ctrl swipe 585 1800 585 600          # 滑动
+cdtk-install list
+cdtk-install install app.ipa -b com.example.demo -n "Demo"
+cdtk-crash list -n 10
+cdtk-crash view <file.ips>
+cdtk-profile list
+```
 
-remoted 的失败有两种形态，只看 TCP 连通性区分不出来：
+所有命令都支持 `-h`。
+
+---
+
+## 排障
+
+**Q1：全线报 `ConnectionRefusedError 10.7.0.1:49152`，或「连上了但没回应」**
+
+两种失败形态，只看 TCP 连通性区分不出来：
 
 | 现象 | 含义 |
 |---|---|
-| `RST` / `ConnectionRefused` | 该端口上的 listener 已经走了 |
-| `TCP connect 成功但 0 字节回包` | reflect 层把连接接住了，remoted 从不答话 |
+| `RST` / `ConnectionRefused` | 该端口的 listener 已经不在了 |
+| TCP 连上但 0 字节回包 | 回环层接住了，`remoted` 从不答话 |
 
-`coredevice_session` 会做 **RPPairing 指纹**（回 `RPPairing` 魔数才算活），并按
-`CDTK_RSD_PORT` → `/tmp/.cdtk_rsd_port.json` 缓存 → 首选 49152 → 扫描 49152-65535 的顺序自动定位端口，
-`cdtk-doctor` 第 4 步会直接报出实际端口。
+`coredevice_session` 会做 RPPairing 指纹（回 `RPPairing` 魔数才算活着），并按
+`CDTK_RSD_PORT` → `/tmp/.cdtk_rsd_port.json` 缓存 → 49152 → 扫描 49152–65535 的顺序定位端口。
 
-**Q：扫描全范围也找不到 listener？**
+**Q2：扫描全范围也找不到 listener**
 
-说明 remoted 的 listener 已被关闭（双身份 re-attach / 锁屏挂起 / 长时间没有 paired-host 事件）。
-唯一可靠恢复是**用数据线重插一次 USB**；解锁、重启手机、重连代理都无效。
+说明 `remoted` 的 listener 已被关闭（双身份 re-attach / 锁屏挂起）。可靠恢复是**用数据线重插一次 USB**；
+解锁、重启手机、重连代理都不解决问题。
 
-**关于握手身份**：remoted 会记住每个 peer 的握手 UUID，新握手带来不同 UUID 就 re-attach，一次性关掉该 peer
-通告过的全部 service listener。本工具链让 pair-verify 与 RSD 握手**都出示配对记录的 identifier**，
-可用 `CDTK_HOST_UUID` 显式覆盖，`CDTK_DEBUG=1` 打印实际使用的 UUID。
+**Q3：握手身份**
+
+`remoted` 会记住每个 peer 的握手 UUID，UUID 变了就 re-attach，一次性关掉该 peer 通告过的全部 service listener。
+本工具链让 pair-verify 与 RSD 握手都出示配对记录里的 `identifier`，可用 `CDTK_HOST_UUID` 覆盖，
+`CDTK_DEBUG=1` 打印实际使用的 UUID。
 
 | 环境变量 | 作用 |
 |---|---|
 | `CDTK_RSD_PORT` | 显式指定控制端口（设置后不自动扫描） |
-| `CDTK_RSD_SCAN=0` | 关掉自动扫描 |
+| `CDTK_RSD_SCAN=0` | 关闭自动扫描 |
 | `CDTK_RSD_SCAN_RANGE=49152-50000` | 缩小扫描范围 |
 | `CDTK_HOST_UUID` | 覆盖 RSD 握手身份 |
+| `CDTK_DEBUG=1` | 打印握手 UUID 等调试信息 |
 
----
+**Q4：用 `cdtk-ctrl launch` 把宿主 App 自己拉回前台，进程会被杀掉**
 
-## 📄 开源许可证 (License)
+宿主 App 指正在运行本工具链的那个 App。用它自己的 bundle id 执行 `cdtk-ctrl launch` 时，进程在回到前台的
+一瞬间收到 `SIGKILL`：界面报中断，日志里 PID 直接跳变、没有任何退出流程，系统崩溃目录里也没有对应 `.ips`
+（只有 App 自己写的 `FOREGROUND CRASH (SIGKILL — app was in use)`）。
 
-本项目基于 [MIT License](LICENSE) 许可协议发布。
-
-**Q：用 `cdtk-ctrl launch` 把宿主 App 自己拉回前台，进程被系统杀掉？**
-
-宿主 App 指正在运行本工具链的那个 App。用 `cdtk-ctrl launch <宿主 bundle id>` 把它自己重新拉到前台时，
-进程会在回到前台的一瞬间收到 `SIGKILL`：界面报「已中断」，日志表现为 PID 变化、没有任何退出流程，
-系统崩溃目录里也没有对应 `.ips`（只有 App 自己写的 `FOREGROUND CRASH (SIGKILL — app was in use)`）。
-
-真机实测（同一进程 PID 贯穿，四种组合）：
+实测四种组合（同一进程 PID 贯穿）：
 
 | 切走 | 切回 | 结果 |
 |---|---|---|
-| `cdtk-ctrl launch` | `cdtk-ctrl launch <宿主>` | ❌ 被杀 |
-| `cdtk-ctrl launch` | 人工点图标切回 | ✅ 正常 |
-| `cdtk-ctrl launch` | 其它走 SpringBoard 正常启动的通道（iCTRL `launch_app`、Swipt `device.launchApplication`） | ✅ 正常 |
-| 其它通道 | 任意 | ✅ 正常 |
+| `cdtk-ctrl launch` | `cdtk-ctrl launch <宿主>` | 被杀 |
+| `cdtk-ctrl launch` | 人工点图标 | 正常 |
+| `cdtk-ctrl launch` | 其它走 SpringBoard 正常启动的通道（iCTRL `launch_app`、Swipt `device.launchApplication`） | 正常 |
+| 其它通道 | 任意 | 正常 |
 
-原因是 `cdtk-ctrl launch` 走 DVT / AppService 那条 RSD 服务，拉起**宿主自己**会触发系统终止；拉起其它 App 不受影响。
+原因是它走 DVT / AppService 那条 RSD 服务，对宿主自己调用会触发系统终止；拉起别的 App 不受影响。
+**规则**：切走随便用，切回宿主走普通启动路径。
 
-**规则**：切走随便用 `cdtk-ctrl launch`；切回宿主改用普通启动路径（iCTRL、Swipt，或人工点图标），不要用 `cdtk-ctrl launch`。
+**Q5：命令跑完后隧道还占资源吗**
 
-**Q：命令跑完后隧道还占着资源吗？**
+不占。每条 `cdtk-*` 都是独立进程，退出即释放 RSD 会话与 Node 桥接子进程（实测退出后 1 秒内无残留进程、
+无监听端口）。留下的是 `/tmp/.cdtk_rsd_port.json` 端口缓存（按设计复用）和一个空的 `/tmp/cdtk_*` 会话目录
+（内含 0 字节 `relay.sock`）；被 `timeout` 强杀的会话才会留下目录，`cdtk-doctor` 会清掉一天以上的。
 
-不占。`cdtk-*` 每条命令是独立进程，退出即释放 RSD 会话与 node 桥接子进程（实测退出后 1 秒内无残留进程、无监听端口）。
-只会在 `/tmp` 残留一个空的 `cdtk_*` 目录（内含 0 字节 `relay.sock`）和 `/tmp/.cdtk_rsd_port.json` 端口缓存（下次复用），
-两者都不影响功能；被 `timeout` 强行杀掉的会话才会把目录留下。
+---
+
+## 安全
+
+- **配对私钥**：只从 `~/.cdtk/pairing/`（0600）读取；权限过宽时会复制进私有目录再锁 0600。
+- **PSK**：通过 stdin 投递给 Node 子进程，不出现在命令行参数里。
+- **临时目录**：每次会话 `mkdtemp` + `0700`，退出时清理。
+- **作用域**：只动 `10.7.0.1/32` 这一条回环路由，不碰局域网与公网流量。
+
+---
+
+## 许可
+
+[MIT](LICENSE)
