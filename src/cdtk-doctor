@@ -160,28 +160,80 @@ class Doctor:
             self.errors.append(("Corrupted or unreadable pairing file" if not is_zh else "配对文件损坏或无法读取", f"Verify pairing record: {e}" if not is_zh else f"请核对文件格式: {e}"))
             return None
 
-    def check_loopback_network(self):
+    @staticmethod
+    def _load_cds():
+        """加载 coredevice_session（端口发现 / RPPairing 指纹都在里面）。"""
+        try:
+            import coredevice_session as cds
+            return cds
+        except ImportError:
+            for p in ("/var/minis/skills/coredevice-toolkit/scripts",):
+                if p not in sys.path:
+                    sys.path.insert(0, p)
+            import coredevice_session as cds
+            return cds
+
+    def _port_dead_error(self, err):
+        self.errors.append((
+            "No RSD listener on the loopback port (remoted listener closed)" if not is_zh
+            else "回环端口上没有 RSD listener（remoted 的 listener 已关闭）",
+            (f"Tried {self.tried_ports}. Reason: {err}\n"
+             "      Port drift: the listener moved — cdtk auto-discovers it, or set CDTK_RSD_PORT.\n"
+             "      No listener anywhere: remoted closed it (dual-identity re-attach / lock-screen suspend).\n"
+             "      Only reliable recovery is replugging USB; reboot/iOS unlock do NOT help.")
+            if not is_zh else
+            (f"已尝试端口 {self.tried_ports}，失败原因: {err}\n"
+             "      端口漂移：listener 换了端口，cdtk 会自动发现，也可用 CDTK_RSD_PORT 显式指定；\n"
+             "      全线无 listener：remoted 已关掉监听（双身份 re-attach / 锁屏挂起），\n"
+             "      唯一可靠恢复是用数据线重插 USB；重启手机与解锁都无效。")
+        ))
+
+    async def check_loopback_network(self):
         sec = f"4. Checking Loopback Network Connectivity ({self.host}:{self.port}):" if not is_zh else f"4. 检查本地回环网络通道 ({self.host}:{self.port}):"
         print(f"\n{BOLD}{sec}{RESET}")
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(2.0)
-        try:
-            s.connect((self.host, self.port))
-            s.close()
-            msg = f"Loopback port reachable ({self.host}:{self.port})" if not is_zh else f"本地回环端口连通成功 ({self.host}:{self.port})"
+        cds = self._load_cds()
+        preferred = self.port
+        self.tried_ports = [preferred]
+
+        tcp_ok = await cds._tcp_probe(self.host, preferred, 2.0)
+        if not tcp_ok:
+            msg = (f"Port {preferred} refused; scanning 49152-65535 for the RSD listener..."
+                   if not is_zh else f"端口 {preferred} 拒连，正在扫描 49152-65535 定位 RSD listener...")
+            print(f"  {WARN} {msg}")
+            found = await cds.scan_for_rsd_port(self.host, skip=[preferred])
+            if found is None:
+                self.port_dead = True
+                err = f"Cannot connect to loopback port ({self.host}:{preferred})"
+                print(f"  {FAIL} {err}" if not is_zh else f"  {FAIL} 无法连接到回环端口 ({self.host}:{preferred})")
+                self._port_dead_error("connection refused on every scanned port")
+                return False
+            self.port = found
+            self.warnings.append((
+                f"RSD listener drifted to port {found} (preferred {preferred})" if not is_zh
+                else f"RSD listener 已漂移到端口 {found}（首选 {preferred}）",
+                (f"cdtk uses {found} automatically and caches it in /tmp/.cdtk_rsd_port.json.\n"
+                 f"      Pin it if you prefer: export CDTK_RSD_PORT={found}") if not is_zh else
+                (f"cdtk 已自动使用 {found} 并缓存到 /tmp/.cdtk_rsd_port.json；\n"
+                 f"      需要固定可执行: export CDTK_RSD_PORT={found}")
+            ))
+            ok_msg = f"Port reachable after drift: {self.host}:{found}" if not is_zh else f"端口漂移已自动修复，连通 {self.host}:{found}"
+            print(f"  {PASS} {ok_msg}")
+        else:
+            ok_msg = f"Loopback port reachable ({self.host}:{preferred})" if not is_zh else f"本地回环端口连通成功 ({self.host}:{preferred})"
+            print(f"  {PASS} {ok_msg}")
+
+        # TCP 通 ≠ remoted 活着：reflect 层会把连接接住再沉默。必须做 RPPairing 指纹。
+        fp_ok = await cds.rsd_fingerprint(self.host, self.port, timeout=1.5)
+        if fp_ok:
+            msg = (f"RSD listener answers RPPairing on {self.port}" if not is_zh
+                   else f"RSD listener 在端口 {self.port} 正常回 RPPairing 握手")
             print(f"  {PASS} {msg}")
             return True
-        except Exception as e:
-            err = f"Cannot connect to loopback port ({self.host}:{self.port}): {e}" if not is_zh else f"无法连接到回环端口 ({self.host}:{self.port}): {e}"
-            print(f"  {FAIL} {err}")
-            self.errors.append((
-                "Local loopback reflection not active" if not is_zh else "本地回环未打通或未生效",
-                ("Ensure Surge (or Loon / Egern) has 10.7.0.1 reflect enabled.\n"
-                 "      Reference guide: references/MULTI_PROXY_GUIDE.md") if not is_zh else
-                ("请检查 Surge（或 Loon / Egern）是否已开启 10.7.0.1 回环模块；\n"
-                 "      参考手册: references/MULTI_PROXY_GUIDE.md")
-            ))
-            return False
+        msg = (f"TCP connected but no RPPairing reply (reflect alive, remoted silent)" if not is_zh
+               else "TCP 连上了但收不到 RPPairing 回包（reflect 活着，remoted 不应答）")
+        print(f"  {FAIL} {msg}")
+        self._port_dead_error("TCP accepted but 0 bytes on RPPairing handshake")
+        return False
 
     async def check_device_handshake(self, pairing_record):
         sec = "5. Checking Handshake with iOS Remote Services:" if not is_zh else "5. 检查与 iOS 内核 Remote Services 握手通信:"
@@ -191,6 +243,21 @@ class Doctor:
             print(f"  {WARN} {warn}")
             self.warnings.append(("Skipped handshake" if not is_zh else "已跳过握手检查", "Provide pairing file to test handshake" if not is_zh else "提供配对文件以测试握手"))
             return
+
+        # 身份一致性（issue #1 缺陷 1）：pair-verify 与 RSD 握手必须出示同一个 UUID，
+        # 否则 remoted 每次都会 re-attach 并把该 peer 的全部 service listener 关掉。
+        cds = self._load_cds()
+        h_uuid = cds.host_handshake_uuid(pairing_record)
+        same = str(h_uuid) == str(pairing_record.get("identifier"))
+        lbl = "RSD handshake identity matches pairing record" if not is_zh else "RSD 握手身份与配对记录一致"
+        print(f"  {PASS if same else FAIL} {lbl} ({str(h_uuid)[:8]}…)")
+        if not same:
+            self.errors.append((
+                "RSD handshake UUID differs from the pairing identity (triggers remoted re-attach)" if not is_zh
+                else "RSD 握手 UUID 与配对身份不一致（会触发 remoted re-attach）",
+                "The pairing record has no usable identifier; set CDTK_HOST_UUID to the pairing identifier." if not is_zh
+                else "配对记录里没有可用的 identifier；可用 CDTK_HOST_UUID 显式指定配对标识符。"
+            ))
 
         try:
             reader, writer = await asyncio.wait_for(
@@ -273,7 +340,7 @@ async def main():
     doc.check_system_deps()
     doc.check_python_deps()
     rec = doc.check_pairing_file()
-    net_ok = doc.check_loopback_network()
+    net_ok = await doc.check_loopback_network()
     if net_ok:
         await doc.check_device_handshake(rec)
     return doc.print_summary()

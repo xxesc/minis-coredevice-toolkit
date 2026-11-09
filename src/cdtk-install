@@ -6,6 +6,7 @@ cdtk-install: iOS 极客侧载与安装中枢 (基于 CoreDevice RSD & installat
 
 import argparse
 import asyncio
+import json
 import os
 import plistlib
 import subprocess
@@ -171,6 +172,80 @@ async def cmd_list(args):
         for bid, (name, ver) in sorted(filtered.items(), key=lambda x: x[1][0]):
             print(f"{name:<25} {ver:<14} {bid}")
 
+async def cmd_info(args):
+    target = args.bundle_id.strip()
+    print(f"⚡ 正在通过 CoreDevice RSD 查询应用元数据: {target}...")
+    async with CoreDeviceSession() as sess:
+        installer = InstallationProxyService(sess.rsd)
+        apps = await installer.get_apps(application_type="Any", bundle_identifiers=[target])
+        if not apps:
+            all_apps = await installer.get_apps(application_type="Any")
+            candidates = {}
+            for bid, m in all_apps.items():
+                name = m.get("CFBundleDisplayName") or m.get("CFBundleName", "")
+                if target.lower() in bid.lower() or target.lower() in name.lower():
+                    candidates[bid] = m
+            if not candidates:
+                print(f"❌ 未找到匹配的应用: {target}")
+                return 1
+            if len(candidates) > 1:
+                print(f"🔍 找到 {len(candidates)} 个候选应用，请输入完整的 Bundle ID 进行详查:")
+                for cbid, cm in candidates.items():
+                    cname = cm.get("CFBundleDisplayName") or cm.get("CFBundleName", "")
+                    print(f"  • {cname:<20} {cbid}")
+                return 0
+            bid, app_meta = next(iter(candidates.items()))
+        else:
+            bid, app_meta = next(iter(apps.items()))
+
+        if getattr(args, "json", False):
+            print(json.dumps({bid: app_meta}, indent=2, ensure_ascii=False, default=str))
+            return 0
+
+        name = app_meta.get("CFBundleDisplayName") or app_meta.get("CFBundleName") or "未知"
+        ver = app_meta.get("CFBundleShortVersionString") or "未知"
+        build = app_meta.get("CFBundleVersion") or "未知"
+        app_type = app_meta.get("ApplicationType") or "未知"
+        signer = app_meta.get("SignerIdentity") or "App Store 官方或系统预装"
+        validated = app_meta.get("ProfileValidated", False)
+        bundle_path = app_meta.get("Path") or "未知"
+        data_container = app_meta.get("Container") or "无独立数据沙盒 (或系统只读)"
+        
+        ent = app_meta.get("Entitlements") or {}
+        groups = ent.get("com.apple.security.application-groups") or []
+        bg_modes = app_meta.get("UIBackgroundModes") or []
+        doc_types = app_meta.get("CFBundleDocumentTypes") or []
+        url_types = app_meta.get("CFBundleURLTypes") or []
+
+        print("\n" + "=" * 65)
+        print(f"           📱 应用深度透视报告: {name}")
+        print("=" * 65)
+        print(f"  • 应用名称:         {name}")
+        print(f"  • Bundle ID:        {bid}")
+        print(f"  • 版本 / Build:     v{ver} (Build {build})")
+        print(f"  • 应用类型:         {app_type}")
+        print(f"  • 代码签名主体:     {signer}")
+        print(f"  • 描述文件验证:     {'✅ 已通过 (ProfileValidated)' if validated else 'ℹ️ 未使用个人描述文件 / 原生受信任'}")
+        print(f"  • 程序包物理路径:   {bundle_path}")
+        print(f"  • 真实数据沙盒目录: {data_container}")
+        
+        if groups:
+            print(f"  • App Groups 共享组:")
+            for g in groups:
+                print(f"      - {g}")
+        if bg_modes:
+            print(f"  • 后台权限 (Background Modes): {', '.join(bg_modes)}")
+        if url_types:
+            schemes = []
+            for u in url_types:
+                schemes.extend(u.get("CFBundleURLSchemes", []))
+            if schemes:
+                print(f"  • 注册 URL Schemes:           {', '.join(schemes)}")
+        if doc_types:
+            doc_names = [d.get("CFBundleTypeName", "Document") for d in doc_types if isinstance(d, dict)]
+            print(f"  • 支持打开文档类型:           {', '.join(doc_names[:5])}{' 等' if len(doc_names)>5 else ''}")
+        print("=" * 65 + "\n")
+
 async def cmd_install(args):
     # 强制二次确认阻断检查 (Reviewer Blocking 1)
     if not args.yes:
@@ -262,6 +337,11 @@ def main():
     p_list.add_argument("-f", "--filter", help="按应用名称或 BundleID 过滤")
     p_list.add_argument("-a", "--all", action="store_true", help="包含系统内置应用")
 
+    # info
+    p_info = subparsers.add_parser("info", help="深度透视指定 App 的沙盒路径、签名证书与权限元数据")
+    p_info.add_argument("bundle_id", help="应用 Bundle Identifier (如 com.example.app) 或应用名称关键词")
+    p_info.add_argument("--json", action="store_true", help="输出完整结构化原始 JSON 数据")
+
     # install
     p_install = subparsers.add_parser("install", help="向设备推送安装 IPA 文件")
     p_install.add_argument("ipa", help="IPA 文件本地路径")
@@ -282,6 +362,8 @@ def main():
     args = parser.parse_args()
     if args.cmd == "list":
         asyncio.run(cmd_list(args))
+    elif args.cmd == "info":
+        asyncio.run(cmd_info(args))
     elif args.cmd == "install":
         asyncio.run(cmd_install(args))
     elif args.cmd == "uninstall":

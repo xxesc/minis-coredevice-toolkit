@@ -204,6 +204,39 @@ cdtk-crash view <crash_file.ips>     # 结构化深度解析异常代码与线�
 
 ---
 
+## 🩺 排障速查 (Troubleshooting)
+
+**Q：突然全线报 `ConnectionRefusedError 10.7.0.1:49152`，或者“连上了但没回应”？**
+
+remoted 的失败有两种形态，只看 TCP 连通性区分不出来：
+
+| 现象 | 含义 |
+|---|---|
+| `RST` / `ConnectionRefused` | 该端口上的 listener 已经走了 |
+| `TCP connect 成功但 0 字节回包` | reflect 层把连接接住了，remoted 从不答话 |
+
+`coredevice_session` 会做 **RPPairing 指纹**（回 `RPPairing` 魔数才算活），并按
+`CDTK_RSD_PORT` → `/tmp/.cdtk_rsd_port.json` 缓存 → 首选 49152 → 扫描 49152-65535 的顺序自动定位端口，
+`cdtk-doctor` 第 4 步会直接报出实际端口。
+
+**Q：扫描全范围也找不到 listener？**
+
+说明 remoted 的 listener 已被关闭（双身份 re-attach / 锁屏挂起 / 长时间没有 paired-host 事件）。
+唯一可靠恢复是**用数据线重插一次 USB**；解锁、重启手机、重连代理都无效。
+
+**关于握手身份**：remoted 会记住每个 peer 的握手 UUID，新握手带来不同 UUID 就 re-attach，一次性关掉该 peer
+通告过的全部 service listener。本工具链让 pair-verify 与 RSD 握手**都出示配对记录的 identifier**，
+可用 `CDTK_HOST_UUID` 显式覆盖，`CDTK_DEBUG=1` 打印实际使用的 UUID。
+
+| 环境变量 | 作用 |
+|---|---|
+| `CDTK_RSD_PORT` | 显式指定控制端口（设置后不自动扫描） |
+| `CDTK_RSD_SCAN=0` | 关掉自动扫描 |
+| `CDTK_RSD_SCAN_RANGE=49152-50000` | 缩小扫描范围 |
+| `CDTK_HOST_UUID` | 覆盖 RSD 握手身份 |
+
+---
+
 ## 📄 开源许可证 (License)
 
 本项目基于 [MIT License](LICENSE) 许可协议发布。

@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
@@ -26,14 +27,168 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 
 import pymobiledevice3.remote.tunnel_service as tunnel_service
+import pymobiledevice3.remote.userspace_tunnel as userspace_tunnel
 from pymobiledevice3.remote.tunnel_service import RemotePairingTcpTunnel
 from pymobiledevice3.remote.userspace_tunnel import UserspaceTun, UserspaceDialPlane
 from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
+from pymobiledevice3.remote.remotexpc import default_handshake_uuid
 
 # 网络容错：支持通过环境变量覆盖目标 Host / Port，默认指向 Surge 本地回环反射。
 HOST = os.environ.get("CDTK_RSD_HOST", "10.7.0.1")
 PORT = int(os.environ.get("CDTK_RSD_PORT", "49152"))
+PORT_EXPLICIT = "CDTK_RSD_PORT" in os.environ
 HANDSHAKE_TIMEOUT = float(os.environ.get("CDTK_HANDSHAKE_TIMEOUT", "10"))
+
+# ── 控制端口动态发现（issue #1 / 缺陷 2）────────────────────────────────
+# 设备端 remoted 的 RSD 监听端口会随 listener 重新通告而漂移（真机实测曾漂到 65389）。
+# 硬编码 49152 在漂移后只会得到两种失败：ConnectionRefused（listener 已走），
+# 或更隐蔽的「TCP 连上但 0 字节回包」（reflect 层接住了，remoted 从不答）。
+# 策略：env 显式指定 → 缓存 → 首选端口，都失败再做 49152-65535 端口扫描 + RPPairing 指纹。
+# 只有在「连接级失败」时才扫描；握手超时说明端口活着、设备没醒，扫了也白扫。
+PORT_CACHE_FILE = os.environ.get("CDTK_RSD_PORT_CACHE", "/tmp/.cdtk_rsd_port.json")
+PORT_SCAN_TIMEOUT = float(os.environ.get("CDTK_RSD_SCAN_TIMEOUT", "0.4"))
+PORT_SCAN_CONCURRENCY = int(os.environ.get("CDTK_RSD_SCAN_CONCURRENCY", "128"))
+def _parse_scan_range():
+    raw = os.environ.get("CDTK_RSD_SCAN_RANGE", "49152-65535")
+    try:
+        lo, hi = raw.split("-", 1)
+        return int(lo), int(hi) + 1
+    except Exception:
+        return 49152, 65536
+
+PORT_SCAN_RANGE = _parse_scan_range()
+PORT_SCAN_CHUNK = 512
+
+def _port_scan_enabled():
+    return os.environ.get("CDTK_RSD_SCAN", "1") not in ("0", "false", "off")
+
+def _read_port_cache(host):
+    try:
+        with open(PORT_CACHE_FILE) as f:
+            d = json.load(f)
+        return int(d["port"]) if d.get("host") == host else None
+    except Exception:
+        return None
+
+def _write_port_cache(host, port):
+    try:
+        tmp = PORT_CACHE_FILE + ".%d.tmp" % os.getpid()
+        with open(tmp, "w") as f:
+            json.dump({"host": host, "port": port, "ts": time.time()}, f)
+        os.replace(tmp, PORT_CACHE_FILE)
+    except Exception:
+        pass
+
+def control_port_candidates(host=None):
+    """返回 [(port, source)]，按尝试顺序排列。"""
+    host = host or HOST
+    if PORT_EXPLICIT:
+        return [(PORT, "env")]
+    out = []
+    cached = _read_port_cache(host)
+    for src, p in (("cache", cached), ("preferred", PORT)):
+        if p and p not in [q for q, _ in out]:
+            out.append((p, src))
+    return out
+
+def host_handshake_uuid(record=None):
+    """RSD 握手要出示的 host UUID —— 必须与 pair-verify 里的身份一致（issue #1 缺陷 1）。
+
+    remoted 的规则：同一个 peer 记住它见过的握手 UUID，一旦新握手带着**不同的** UUID 就来一次
+    re-attach —— 该 peer 通告过的所有 service listener 全部关闭，每个端口都拒连。而 pair-verify
+    出示的是配对记录的 `identifier`，RSD 握手默认却是 `uuid3(DNS, hostname)`（iSH 下恒为
+    localhost，所有人同一个值）。两边不一致 ⇒ 每次会话都在主动触发 re-attach。
+
+    所以这里统一取配对记录的 identifier：优先 env `CDTK_HOST_UUID`，其次配对记录，
+    最后才退回全局默认（此时会与身份不一致，但至少不会崩）。
+    """
+    raw = os.environ.get("CDTK_HOST_UUID")
+    if raw:
+        try:
+            return uuid.UUID(raw)
+        except Exception:
+            print("[cdtk] CDTK_HOST_UUID 不是合法 UUID，已忽略: %r" % raw, file=sys.stderr)
+    if record:
+        ident = record.get("identifier")
+        if ident:
+            try:
+                return uuid.UUID(str(ident))
+            except Exception:
+                print("[cdtk] 配对记录 identifier 无法解析为 UUID: %r" % (ident,), file=sys.stderr)
+    return default_handshake_uuid()
+
+
+def _is_port_level_failure(err):
+    """端口层失败（该扫端口） vs 设备层失败（端口活着但没醒，别扫）。"""
+    if isinstance(err, asyncio.TimeoutError):
+        return False
+    text = "%s %r" % (type(err).__name__, err)
+    return any(k in text for k in ("Refused", "ConnectionReset", "IncompleteReadError",
+                                  "0 bytes read", "ConnectionError", "OSError",
+                                  "Cannot connect", "unreachable"))
+
+async def _tcp_probe(host, port, timeout):
+    w = None
+    try:
+        r, w = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)
+        return True
+    except Exception:
+        return False
+    finally:
+        if w is not None:
+            try:
+                w.close()
+            except Exception:
+                pass
+
+async def rsd_fingerprint(host, port, timeout=1.5):
+    """真指纹：发一个 RPPairing 握手帧，只有回 RPPairing 魔数才算 remoted listener 活着。
+    纯 TCP connect 不够 —— reflect 层会把连接接住再沉默（issue #1 记录的第二种失败形态）。
+    这里只发握手第一帧、不做 pair-verify，不涉及身份 UUID，不会触发 re-attach。"""
+    w = None
+    try:
+        r, w = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)
+        body = json.dumps({
+            "message": {"plain": {"_0": {"request": {"_0": {"handshake": {"_0": {
+                "hostOptions": {"attemptPairVerify": True}, "wireProtocolVersion": 19}}}}}}},
+            "originatedBy": "host", "sequenceNumber": 0,
+        }).encode()
+        w.write(b"RPPairing" + struct.pack(">H", len(body)) + body)
+        await w.drain()
+        magic = await asyncio.wait_for(r.readexactly(9), timeout=timeout)
+        return magic == b"RPPairing"
+    except Exception:
+        return False
+    finally:
+        if w is not None:
+            try:
+                w.close()
+            except Exception:
+                pass
+
+async def scan_for_rsd_port(host=None, skip=()):
+    """分块扫描 49152-65535，先批量 TCP 探活、再对候选做 RPPairing 指纹。
+    分块是为了不让 iSH 一次性创建上万协程；找到即返回。"""
+    host = host or HOST
+    lo, hi = PORT_SCAN_RANGE
+    skip = set(skip)
+    for start in range(lo, hi, PORT_SCAN_CHUNK):
+        found = []
+        sem = asyncio.Semaphore(PORT_SCAN_CONCURRENCY)
+
+        async def _probe(p):
+            async with sem:
+                if await _tcp_probe(host, p, PORT_SCAN_TIMEOUT):
+                    found.append(p)
+
+        await asyncio.gather(*[_probe(p) for p in range(start, min(start + PORT_SCAN_CHUNK, hi))],
+                             return_exceptions=True)
+        for p in sorted(found):
+            if p in skip:
+                continue
+            if await rsd_fingerprint(host, p):
+                return p
+    return None
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -272,56 +427,82 @@ class CoreDeviceSession:
         self.tmp_dir = None
         self.sock_path = None
         self.userspace_tun = None
+        self.tun = None
         self.dial_plane = None
         self.read_task = None
         self.tun_read_task = None
         self.writer = None
 
+    def _close_ctrl(self):
+        w = getattr(self, "writer", None)
+        if w is not None:
+            try:
+                w.close()
+            except Exception:
+                pass
+
+    async def _pair_verify_once(self, record, ctl_port):
+        """在指定控制端口完成 connect + pair-verify + createListener，返回隧道监听端口。"""
+        self.handshake_uuid = host_handshake_uuid(record)
+        self.reader, self.writer = await asyncio.wait_for(
+            asyncio.open_connection(HOST, ctl_port), timeout=5.0
+        )
+        psk, c_key, s_key = await asyncio.wait_for(
+            do_pair_verify(self.reader, self.writer, record),
+            timeout=HANDSHAKE_TIMEOUT,
+        )
+        listener_port = await asyncio.wait_for(
+            create_listener(self.reader, self.writer, psk, c_key, s_key),
+            timeout=HANDSHAKE_TIMEOUT,
+        )
+        return psk, c_key, s_key, listener_port
+
     async def __aenter__(self):
         record = load_pairing(self.pairing_file)
-        try:
-            self.reader, self.writer = await asyncio.wait_for(
-                asyncio.open_connection(HOST, PORT), timeout=5.0
-            )
-        except Exception as e:
-            raise ConnectionError(
-                f"无法连接到 CoreDevice RSD 本地回环 ({HOST}:{PORT}): {e}\n"
-                "连接握手失败，请逐项检查以下三大要点：\n"
+        queue = control_port_candidates()
+        tried, scan_done, last_err = [], False, None
+        while queue:
+            ctl_port, source = queue.pop(0)
+            tried.append(ctl_port)
+            try:
+                psk, c_key, s_key, port = await self._pair_verify_once(record, ctl_port)
+            except Exception as e:
+                last_err = e
+                self._close_ctrl()
+                if not queue and not scan_done:
+                    scan_done = True
+                    if _port_scan_enabled() and _is_port_level_failure(e):
+                        print("[cdtk] 控制端口 %d 无 RSD 响应（%s），扫描 49152-65535 定位 remoted listener…"
+                              % (ctl_port, type(e).__name__), file=sys.stderr)
+                        found = await scan_for_rsd_port(HOST, skip=tried)
+                        if found is not None:
+                            print("[cdtk] 发现 RSD 监听端口 %d，已写入缓存" % found, file=sys.stderr)
+                            queue.append((found, "scan"))
+                continue
+            self.ctl_port, self.ctl_port_source = ctl_port, source
+            _write_port_cache(HOST, ctl_port)
+            if source == "scan":
+                print("[cdtk] 使用扫描发现的控制端口 %d" % ctl_port, file=sys.stderr)
+            break
+        else:
+            msg = (
+                f"无法连接到 CoreDevice RSD 本地回环 ({HOST}:{','.join(str(p) for p in tried) or PORT}): {last_err}\n"
+                "连接握手失败，请逐项检查以下要点：\n"
                 "  ① 代理软件本地回环：确认 Surge 已开启 10.7.0.1 = reflect 本地回环反射\n"
                 "     (并配置 tun-included-routes = 10.7.0.1/32)；若自定义了端口，请同步设置\n"
                 "     export CDTK_RSD_HOST=... / export CDTK_RSD_PORT=... 覆盖目标地址；\n"
                 "  ② 系统【开发者模式】：确认【设置 ➡️ 隐私与安全性 ➡️ 开发者模式】已开启，\n"
                 "     否则内核 remoted 守护进程不会监听 RSD 端口；\n"
                 "  ③ 【iPhone 是否处于解锁亮屏状态】：锁屏会导致内核 RSD 端口被系统临时\n"
-                "     挂起/挂断，连接失败。请解锁并保持屏幕常亮后重试！"
-            ) from e
-
-        try:
-            psk, c_key, s_key = await asyncio.wait_for(
-                do_pair_verify(self.reader, self.writer, record),
-                timeout=HANDSHAKE_TIMEOUT,
-            )
-            port = await asyncio.wait_for(
-                create_listener(self.reader, self.writer, psk, c_key, s_key),
-                timeout=HANDSHAKE_TIMEOUT,
-            )
-        except asyncio.TimeoutError as e:
-            if hasattr(self, "writer") and self.writer:
-                try:
-                    self.writer.close()
-                except Exception:
-                    pass
-            raise TimeoutError(
-                f"CoreDevice 握手超时（{HANDSHAKE_TIMEOUT:.0f}s）。"
-                "请确认设备已解锁、开发者模式已开启，且回环规则生效。"
-            ) from e
-        except Exception:
-            if hasattr(self, "writer") and self.writer:
-                try:
-                    self.writer.close()
-                except Exception:
-                    pass
-            raise
+                "     挂起/挂断，连接失败。请解锁并保持屏幕常亮后重试！\n"
+                "  ④ 已试端口: %s。若 49152-65535 范围内一个 RSD listener 都找不到，\n"
+                "     说明 remoted 的 listener 已被关闭（双身份 re-attach / 锁屏挂起 /\n"
+                "     长时间没有 paired-host 事件）。唯一可靠恢复是用数据线重插 USB\n"
+                "     触发一次 paired-host 事件；重启手机无效。\n"
+            ) % (", ".join(str(p) for p in tried) or str(PORT))
+            if isinstance(last_err, asyncio.TimeoutError):
+                raise TimeoutError(msg) from last_err
+            raise ConnectionError(msg) from last_err
 
         proxy_script = get_node_proxy_script()
         
@@ -371,8 +552,21 @@ class CoreDeviceSession:
             self.dial_plane = UserspaceDialPlane(self.userspace_tun, server_addr)
             await self.dial_plane.__aenter__()
 
-            self.rsd = RemoteServiceDiscoveryService((server_addr, server_port), open_connection=self.dial_plane.dial)
+            if os.environ.get("CDTK_DEBUG") == "1":
+                print("[cdtk] RSD handshake uuid = %s（与 pair-verify 身份一致）" % self.handshake_uuid,
+                      file=sys.stderr)
+            self.rsd = RemoteServiceDiscoveryService(
+                (server_addr, server_port),
+                open_connection=self.dial_plane.dial,
+                handshake_uuid=self.handshake_uuid,
+            )
             await self.rsd.connect()
+
+            # 登记为当前进程的活动用户态隧道：触控 (touch_session)、投屏等由设备主动推流的服务
+            # 据此把 UDP 接收端开在 pytcp 栈上；不登记会退回内核 socket，报 local_address is unavailable
+            self.tun = self.userspace_tun
+            userspace_tunnel._active_tunnel = self
+            userspace_tunnel.USERSPACE_ACTIVE = True
             return self
         except Exception:
             await self.__aexit__(None, None, None)
@@ -380,6 +574,11 @@ class CoreDeviceSession:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         # 严谨防御性资源回收：避免单个异常导致子进程与 Socket 泄漏
+        if getattr(userspace_tunnel, "_active_tunnel", None) is self:
+            userspace_tunnel._active_tunnel = None
+            userspace_tunnel.USERSPACE_ACTIVE = False
+        self.tun = None
+
         if self._stdout_fd is not None:
             try:
                 loop = asyncio.get_running_loop()

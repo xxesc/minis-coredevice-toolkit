@@ -202,6 +202,41 @@ cdtk-crash view <crash_file.ips>     # Structured analysis of crash stack trace
 
 ---
 
+## 🩺 Troubleshooting
+
+**Q: every command suddenly fails with `ConnectionRefusedError 10.7.0.1:49152`, or "connects but no reply"?**
+
+remoted fails in two shapes, and a plain TCP connect cannot tell them apart:
+
+| Symptom | Meaning |
+|---|---|
+| `RST` / `ConnectionRefused` | the listener on that port is gone |
+| `TCP connect OK, 0 bytes back` | the reflect layer accepted the connection, remoted never answers |
+
+`coredevice_session` therefore runs an **RPPairing fingerprint** (only a `RPPairing` magic reply counts as alive)
+and locates the port automatically: `CDTK_RSD_PORT` → cache in `/tmp/.cdtk_rsd_port.json` → 49152 → scan
+49152-65535. `cdtk-doctor` step 4 reports the port actually in use.
+
+**Q: nothing found anywhere in the scanned range?**
+
+remoted's listener has been closed (dual-identity re-attach / lock-screen suspend / no paired-host event for a long
+time). The only reliable recovery is **replugging USB**; unlocking, rebooting the phone or reconnecting the proxy
+do not help.
+
+**Handshake identity**: remoted remembers each peer's handshake UUID; a handshake carrying a different one triggers
+a re-attach that closes *every* service listener advertised to that peer. CDTK presents the **pairing record's
+identifier** in both pair-verify and the RSD handshake. Override with `CDTK_HOST_UUID`; `CDTK_DEBUG=1` prints the
+UUID actually used.
+
+| Variable | Effect |
+|---|---|
+| `CDTK_RSD_PORT` | pin the control port (disables auto-scan) |
+| `CDTK_RSD_SCAN=0` | disable auto-scan |
+| `CDTK_RSD_SCAN_RANGE=49152-50000` | narrow the scan range |
+| `CDTK_HOST_UUID` | override the RSD handshake identity |
+
+---
+
 ## 📄 License
 
 This project is licensed under the [MIT License](LICENSE).
