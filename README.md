@@ -20,7 +20,7 @@ becomes one command instead of "plug in a computer" or "jailbreak".
 - Not a jailbreak: no root, no system partitions. Only the services RSD exposes.
 - Needs Surge ≥ 5.23 to reflect `10.7.0.1` back to the phone.
 - Needs a RemotePairing record — see the [pairing guide](references/PAIRING_GUIDE.md).
-- The first run, and any time `remoted` closes its listener, needs a computer with USB (see Q2).
+- The first run needs one USB connection (from a computer or any USB host) so `remoted` advertises the listener; the pairing record itself can be obtained on-device (see the pairing guide). Recovery after the listener closes is Q2.
 - Tested on iPhone 14 (iPhone14,7) / iOS 27.3, host Minis 1.16. Other versions are not verified by this repo.
   There is no CI and no reproducible test script; every "measured" note below is a single observation.
 
@@ -89,7 +89,7 @@ Pair-Verify handshake. Failures come with the command to fix them. The device id
 | `cdtk-springboard` | Home layout backup / apply   |
 | `cdtk-proc`        | Jetsam immunity, signals     |
 
-`-h` works on every command except `cdtk-doctor` and `cdtk-notify`.
+`-h` works on almost every command; `cdtk-doctor -h` starts the audit instead of printing help, and `cdtk-notify` shows usage when run without arguments.
 
 ---
 
@@ -110,10 +110,11 @@ cdtk-crash view <file.ips>
 cdtk-profile list
 ```
 
-Destructive subcommands (`install`, `uninstall`, `profile install`, `proc signal`) require `-y`.
-Every value in these examples is a placeholder: `com.example.demo` only shows the format and has nothing to do with any
-real app, and the `00008110-…` identifier that appears in `cdtk-doctor` output is a hand-written fake UDID
-(`00008110` is a public A15-generation prefix, the tail is a sequential sequence), not a device value.
+Commands that need confirmation: `install`, `uninstall`, `profile install/remove`, `proc signal` refuse without `-y`;
+`springboard apply` falls back to an interactive prompt without it.
+Every value in these examples is a placeholder: `com.example.demo` only shows the format and has nothing to do with any real
+app. The `Pairing identifier` line printed by `cdtk-doctor` is the pairing record's `identifier` (a UUID), masked by
+default — it is not the device UDID.
 Known limit: `-b` / `-n` only apply when the IPA is actually re-signed; on an already-signed IPA without `-s` they are
 silently ignored.
 
@@ -166,9 +167,8 @@ calling it on the host itself triggers the termination; launching other apps is 
 **Q5: Does the tunnel keep resources after a command finishes**
 
 No. Each command is its own process; the RSD session and the Node child are released on exit (single observation: no
-leftover process and no listening port one second after exit). What stays is `/tmp/.cdtk_rsd_port.json` (the port cache,
-by design) and an empty `/tmp/cdtk_*` directory; sessions killed by `timeout` leave it behind, and `cdtk-doctor` sweeps
-those older than a day.
+leftover process and no listening port one second after exit). A clean exit leaves nothing behind; a session interrupted by `timeout` or SIGKILL leaves an empty directory, and `cdtk-doctor`
+sweeps those older than a day once nothing is listening on them. `/tmp/.cdtk_rsd_port.json` (the port cache) is kept by design.
 
 ---
 

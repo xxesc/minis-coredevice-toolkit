@@ -272,6 +272,10 @@ async def cmd_install(args):
     if not args.no_sign and not has_sig:
         need_sign = True
 
+    if not need_sign and (getattr(args, "bundle_id", None) or getattr(args, "name", None)):
+        print("⚠️  -b / -n 只在重新签名时生效；本次 IPA 已带签名且未给 -s，这两个参数会被忽略。",
+              file=sys.stderr)
+
     if need_sign:
         p12, prov, pwd = find_signing_assets(args.cert, args.prov, args.password)
         if not p12 or not prov:

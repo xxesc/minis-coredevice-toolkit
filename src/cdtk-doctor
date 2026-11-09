@@ -123,7 +123,7 @@ class Doctor:
                 print(f"  {FAIL} {err}")
                 self.errors.append((
                     "No device pairing file found" if not is_zh else "未找到配对凭据",
-                    "Place your pairing record at /var/minis/workspace/cdtk/my_device.plist and run chmod 600" if not is_zh else "请将配对文件放入 /var/minis/workspace/cdtk/my_device.plist 并执行 chmod 600"
+                    "Place your pairing record in /root/.cdtk/pairing/ and run chmod 600" if not is_zh else "请将配对文件放入 /root/.cdtk/pairing/ 并执行 chmod 600"
                 ))
                 return None
 
@@ -151,7 +151,7 @@ class Doctor:
                 ok_perm = "Pairing file security compliant (0600 owner exclusive)" if not is_zh else "配对文件安全权限合规 (0600 属主独占)"
                 print(f"  {PASS} {ok_perm}")
 
-            lbl_udid = "Device UDID" if not is_zh else "设备标识符 (UDID)"
+            lbl_udid = "Pairing identifier" if not is_zh else "配对标识"
             ident = str(rec.get('identifier') or "")
             if "--show-udid" in sys.argv:
                 shown = ident
@@ -200,6 +200,14 @@ class Doctor:
         cds = self._load_cds()
         preferred = self.port
         self.tried_ports = [preferred]
+
+        cached = cds._read_port_cache(self.host) if hasattr(cds, "_read_port_cache") else None
+        if cached and cached != preferred:
+            if await cds._tcp_probe(self.host, cached, 0.4):
+                self.port = preferred = cached
+                self.tried_ports = [preferred]
+            else:
+                self.tried_ports.append(cached)
 
         tcp_ok = await cds._tcp_probe(self.host, preferred, 2.0)
         if not tcp_ok:
@@ -351,9 +359,20 @@ def cleanup_stale_temp_dirs(max_age_s=86400):
                 continue
             path = os.path.join("/tmp", name)
             try:
-                if os.path.isdir(path) and now - os.path.getmtime(path) > max_age_s:
-                    shutil.rmtree(path, ignore_errors=True)
-                    removed += 1
+                if not os.path.isdir(path) or now - os.path.getmtime(path) <= max_age_s:
+                    continue
+                sock = os.path.join(path, "relay.sock")
+                if os.path.exists(sock):
+                    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    probe.settimeout(0.2)
+                    try:
+                        probe.connect(sock)   # a live session still listens: leave it alone
+                        probe.close()
+                        continue
+                    except Exception:
+                        probe.close()
+                shutil.rmtree(path, ignore_errors=True)
+                removed += 1
             except Exception:
                 pass
     except Exception:
@@ -364,7 +383,6 @@ async def main():
     print_header()
     swept = cleanup_stale_temp_dirs()
     if swept:
-        is_zh = "--zh" in sys.argv or os.environ.get("CDTK_LANG", "").lower().startswith("zh")
         print(f"  🧹 {'Cleaned stale session dirs' if not is_zh else '已清理残留会话临时目录'}: {swept} in /tmp\n")
     doc = Doctor()
     doc.check_system_deps()

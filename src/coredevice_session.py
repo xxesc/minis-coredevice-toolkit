@@ -248,7 +248,7 @@ def load_pairing(pairing_path=None, isolate=True):
         raise FileNotFoundError(
             "未找到可用的设备配对记录 (.plist)！\n"
             "安全说明：为防止误用不相关凭证，CDTK 仅从以下位置安全加载：\n"
-            "  1. 显式参数 --pairing / path；\n"
+            "  1. 环境变量 CDTK_PAIRING_FILE 指向文件；\n"
             "  2. 环境变量 export CDTK_PAIRING_FILE=/path/to/pairing.plist；\n"
             "  3. 专用受控目录 /root/.cdtk/pairing/*.plist 或 /var/minis/workspace/cdtk/*.plist；\n"
             "  4. 当前工作目录（需显式开启 export CDTK_ALLOW_CWD_PAIRING=1）。\n"
@@ -293,7 +293,7 @@ def load_pairing(pairing_path=None, isolate=True):
             f"配对文件 {target} 格式不合规，缺少必需字段 (identifier / private_key / public_key)。\n"
             "说明：iOS 远程配对握手必须提供配对身份标识符 (identifier)。\n"
             "若该文件通过电脑端 pymobiledevice3 生成，可能缺少 identifier。\n"
-            "推荐在 iOS 端使用 SideStore / SideInstaller 导出合规配对文件（详见 references/PAIRING_GUIDE.md）。"
+            "推荐在 iOS 端使用 StikPair 导出合规配对文件（详见 references/PAIRING_GUIDE.md）。"
         )
 
     return {

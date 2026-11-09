@@ -19,7 +19,7 @@
 - 不是越狱：没有 root，读不了系统分区；只能调用 RSD 暴露出来的服务。
 - 需要 Surge（≥ 5.23）把 `10.7.0.1` 反射回本机。
 - 需要一个 RemotePairing 格式的配对文件，获取方式见 [配对指南](references/PAIRING_GUIDE_zh.md)。
-- 首次使用、或 `remoted` 的 listener 掉线后，恢复需要一台能插 USB 的电脑（见 Q3）。
+- 首次运行需要一次 USB 连接（由电脑或任意 USB 主机发起）让 `remoted` 通告 listener；配对记录本身可以纯机内获取（见配对指南）。listener 掉线后的恢复见 Q2。
 - 实测环境：iPhone 14（iPhone14,7）/ iOS 27.3，宿主 Minis 1.16。其它版本没有在本仓库验证过。
   仓库没有 CI，也没有可复现的测试脚本，文档里的「实测」都是单机单次观察。
 
@@ -71,21 +71,21 @@ cdtk-doctor          # 中文输出加 --zh
 
 ## 工具矩阵
 
-| 命令               | 作用                   |
-| ------------------ | ---------------------- |
-| `cdtk-doctor`      | 环境体检，清残留目录   |
-| `cdtk-install`     | 列应用、装 / 卸 IPA    |
-| `cdtk-ctrl`        | 进程、拉起 App、触控   |
-| `cdtk-notify`      | 推送系统横幅           |
-| `cdtk-profile`     | 描述文件：列 / 装 / 删 |
-| `cdtk-fs`          | 读沙盒、媒体           |
-| `cdtk-diag`        | 电池数据、内核日志     |
-| `cdtk-crash`       | 列取解析 `.ips`        |
-| `cdtk-inspect`     | WebKit 页面、注入 JS   |
-| `cdtk-springboard` | 主屏布局备份 / 下发    |
-| `cdtk-proc`        | Jetsam 豁免、信号      |
+| 命令               | 作用                     |
+| ------------------ | ------------------------ |
+| `cdtk-doctor`      | 环境体检，清残留目录     |
+| `cdtk-install`     | 列应用、装 / 卸 IPA      |
+| `cdtk-ctrl`        | 进程、拉起 App、触控     |
+| `cdtk-notify`      | 推送系统横幅（仅 Minis） |
+| `cdtk-profile`     | 描述文件：列 / 装 / 删   |
+| `cdtk-fs`          | 读沙盒、媒体             |
+| `cdtk-diag`        | 电池数据、内核日志       |
+| `cdtk-crash`       | 列取解析 `.ips`          |
+| `cdtk-inspect`     | WebKit 页面、注入 JS     |
+| `cdtk-springboard` | 主屏布局备份 / 下发      |
+| `cdtk-proc`        | Jetsam 豁免、信号        |
 
-`-h` 只有 `cdtk-doctor` 和 `cdtk-notify` 不支持，其余命令都可以。
+`-h` 对绝大多数命令有效；`cdtk-doctor -h` 不会打印帮助，而是直接开始体检，`cdtk-notify` 用无参数运行看用法。
 
 ---
 
@@ -106,9 +106,9 @@ cdtk-crash view <file.ips>
 cdtk-profile list
 ```
 
-破坏性命令（`install`、`uninstall`、`profile install`、`proc signal`）都要显式加 `-y`。
-文档里的示例值都是占位符：`com.example.demo` 只是格式演示，与任何真实应用无关；`cdtk-doctor` 输出中出现的
-`00008110-…` 形态标识是手写的假 UDID（`00008110` 是 A15 世代公开前缀，尾部为顺序序列），不是任何设备的值。
+需要确认的命令：`install`、`uninstall`、`profile install/remove`、`proc signal` 不给 `-y` 直接拒绝；`springboard apply` 不给 `-y` 会转成交互式确认。
+文档里的示例值都是占位符：`com.example.demo` 只是格式演示，与任何真实应用无关。`cdtk-doctor` 里那行 `配对标识` 打印的是配对记录的
+`identifier`（UUID），默认已打码，不是设备 UDID。
 已知限制：`-b` / `-n` 只在真正签名时生效；已经带签名的 IPA 不给 `-s` 会被静默忽略。
 
 ---
@@ -158,8 +158,8 @@ cdtk-profile list
 **Q5：命令跑完后隧道还占资源吗**
 
 不占。每条命令是独立进程，退出即释放 RSD 会话和 Node 子进程（单机观察：退出后 1 秒内查不到残留进程与监听端口）。
-留下的是 `/tmp/.cdtk_rsd_port.json` 端口缓存（设计如此）和空的 `/tmp/cdtk_*` 会话目录；被 `timeout` 强杀时会话目录会留下，
-`cdtk-doctor` 每次启动清理一天以上的。
+正常退出不会留目录；被 `timeout` 或 SIGKILL 打断的会话会剩下空目录，`cdtk-doctor` 每次启动清理一天以上、且确认没有会话在监听的。
+`/tmp/.cdtk_rsd_port.json` 端口缓存是设计如此，会保留。
 
 ---
 

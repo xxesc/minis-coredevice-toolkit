@@ -7,6 +7,11 @@ ACTION="$1"
 APP_NAME="$2"
 MSG="$3"
 
+command -v apple-notification >/dev/null 2>&1 || {
+    echo "cdtk-notify: 需要 Minis 的 apple-notification（仅 Minis 宿主可用）" >&2
+    exit 3
+}
+
 if [ -z "$ACTION" ] || [ -z "$APP_NAME" ]; then
     echo "Usage: cdtk-notify <start|step|done> <App名> <具体操作说明>"
     exit 1

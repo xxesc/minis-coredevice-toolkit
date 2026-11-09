@@ -85,5 +85,6 @@ done
 echo ""
 echo "✨ 安装完成。"
 echo "   1. 在 Surge 中启用 10.7.0.1 本地回环（见 references/SURGE_LOOPBACK_zh.md）"
-echo "   2. 将 pairing record 放入 /root/.cdtk/pairing/ 或 /var/minis/workspace/cdtk/（chmod 600）"
+echo "   2. 将 pairing record 放入 /root/.cdtk/pairing/（chmod 600；共享目录不推荐）"
+command -v apple-notification >/dev/null || echo "   ℹ️ cdtk-notify 需要 Minis 的 apple-notification，本机未找到"
 echo "   3. 运行 cdtk-doctor 体检"

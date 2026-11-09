@@ -27,7 +27,7 @@ python3 -c "import plistlib;print(sorted(plistlib.load(open('pairing.plist','rb'
 在手机上开启「开发者模式」后，用下面任一 App 配对，再导出配对文件：
 
 - **StikPair** —— 配对后从 App 内导出 `.plist`
-- **wloc** —— 同样可以导出配对文件
+- **wloc** —— 用户反馈同样能导出，本仓库未复现
 
 导出的文件应当含上面三个键。其它方式（例如在电脑上用 `pymobiledevice3 remote pair`）本仓库没有验证过，需要时自己试。
 

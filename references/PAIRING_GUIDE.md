@@ -28,7 +28,7 @@ python3 -c "import plistlib;print(sorted(plistlib.load(open('pairing.plist','rb'
 Enable Developer Mode on the phone, pair with either app below, then export the record:
 
 - **StikPair** — pair, then export the `.plist` from the app
-- **wloc** — also exports a pairing record
+- **wloc** — reported to export one too; not reproduced here
 
 The exported file should contain the three keys above. Other ways (for example `pymobiledevice3 remote pair` on a
 computer) are not verified by this repository — try them yourself if you need to.
