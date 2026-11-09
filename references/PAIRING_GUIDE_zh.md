@@ -26,8 +26,14 @@ python3 -c "import plistlib;print(sorted(plistlib.load(open('pairing.plist','rb'
 
 ## 获取
 
-本仓库验证过的做法：在手机上开启「开发者模式」，用 **StikPair** 完成配对，再从 StikPair 里导出配对文件（`.plist`）。
-导出的文件里应当能看到上面三个键，直接放进下面的搜索路径即可。
+在手机上开启「开发者模式」后，用下面任一 App 配对，再把导出的配对文件（`.plist`）放进搜索路径。两者导出的格式都可用：
+
+| App                           | 说明                         |
+| ----------------------------- | ---------------------------- |
+| **StikPair**                  | 配对后从 App 内导出 `.plist` |
+| **wloc**（`com.yu9191.wloc`） | 同样支持导出配对文件         |
+
+导出文件里应当能看到上面三个键。
 
 其它方式（例如在电脑上用 `pymobiledevice3 remote pair` 生成）本仓库没有验证过，需要时自己试。
 

@@ -26,9 +26,15 @@ python3 -c "import plistlib;print(sorted(plistlib.load(open('pairing.plist','rb'
 
 ## Getting one
 
-What this repository has verified: enable Developer Mode on the phone, pair with **StikPair** on the device, then export
-the pairing record (`.plist`) from StikPair. The exported file should contain the three keys above; put it in one of the
-lookup paths below.
+With Developer Mode enabled on the phone, pair using either app below and export the pairing record (`.plist`), then put
+it in one of the lookup paths. Both produce a usable file:
+
+| App                          | Notes                                       |
+| ---------------------------- | ------------------------------------------- |
+| **StikPair**                 | Pair, then export the `.plist` from the app |
+| **wloc** (`com.yu9191.wloc`) | Also exports a pairing record               |
+
+The exported file should contain the three keys above.
 
 Other ways (for example generating it on a computer with `pymobiledevice3 remote pair`) are not verified here — try them
 yourself if you need to.
