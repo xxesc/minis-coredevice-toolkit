@@ -174,6 +174,33 @@ cdtk-profile list
 
 ---
 
+## 做成技能（给别的助手用）
+
+仓库里没有放 `SKILL.md`（那是每个宿主自己的技能格式），但给了模板。三步：
+
+1. 建目录，把脚本拷进去（目录名叫什么无所谓，`setup.sh` 按自身位置找文件）：
+
+   ```bash
+   mkdir -p <skills>/coredevice-toolkit/scripts
+   cp -r src/* <skills>/coredevice-toolkit/scripts/
+   ```
+
+2. 用 `SKILL.example.md` 生成 `SKILL.md`，按需改 `name` / `description` / 触发词：
+
+   ```bash
+   cp SKILL.example.md <skills>/coredevice-toolkit/SKILL.md
+   ```
+
+3. 安装并自检：
+
+   ```bash
+   sh <skills>/coredevice-toolkit/scripts/setup.sh
+   cdtk-doctor
+   ```
+
+有三件事 AI 自己办不到，需要人配合：开开发者模式、配好 Surge 回环、导出一份配对文件（StikPair 或 wloc）。
+这三样不给，`cdtk-doctor` 第 3–5 步不会通过。
+
 ## 维护
 
 改代码或改文档后跑一次：

@@ -184,6 +184,34 @@ and `cdtk-doctor` sweeps those older than a day whose pid is gone (`--no-sweep` 
 
 ---
 
+## Packaging as a skill
+
+There is no `SKILL.md` in this repo (each host has its own skill format), but there is a template. Three steps:
+
+1. Create the directory and copy the scripts in (the directory name does not matter; `setup.sh` locates its
+   files relative to itself):
+
+   ```bash
+   mkdir -p <skills>/coredevice-toolkit/scripts
+   cp -r src/* <skills>/coredevice-toolkit/scripts/
+   ```
+
+2. Turn the template into `SKILL.md` and adjust `name` / `description` / triggers:
+
+   ```bash
+   cp SKILL.example.md <skills>/coredevice-toolkit/SKILL.md
+   ```
+
+3. Install and self-check:
+
+   ```bash
+   sh <skills>/coredevice-toolkit/scripts/setup.sh
+   cdtk-doctor
+   ```
+
+Three things an assistant cannot do alone and a human has to provide: Developer Mode, a working Surge loopback, and a
+pairing record (StikPair or wloc). Without them, steps 3-5 of `cdtk-doctor` will not pass.
+
 ## Testing
 
 After touching code or docs, run:
