@@ -70,19 +70,22 @@ cdtk-doctor --zh
 
 ## 工具矩阵
 
-| 命令               | 服务                     | 作用                       |
-| ------------------ | ------------------------ | -------------------------- |
-| `cdtk-doctor`      | 自检                     | 环境体检，清残留会话目录   |
-| `cdtk-install`     | `installation_proxy`     | 列应用、装 IPA、卸载       |
-| `cdtk-ctrl`        | `dtuhidd` / `appservice` | 列进程、拉起 App、注入触控 |
-| `cdtk-notify`      | `apple-notification`     | 调起 App 前后推横幅        |
-| `cdtk-profile`     | `MCInstall`              | 列 / 装 / 删描述文件       |
-| `cdtk-fs`          | `house_arrest`           | 读沙盒与媒体分区           |
-| `cdtk-diag`        | `diagnostics_relay`      | 电池数据、内核日志         |
-| `cdtk-crash`       | `crashreportcopymobile`  | 列取并解析 `.ips`          |
-| `cdtk-inspect`     | `webinspector`           | 列 WebKit 页面、注入 JS    |
-| `cdtk-springboard` | `springboard.iconstate`  | 备份 / 下发主屏布局        |
-| `cdtk-proc`        | `processcontrol`         | Jetsam 豁免、发信号        |
+底层服务：`installation_proxy`、`dtuhidd`、`appservice`、`house_arrest`、`crashreportcopymobile`、
+`webinspector`、`MCInstall`、`springboard.iconstate`、`processcontrol`、`diagnostics_relay`。
+
+| 命令               | 作用                       |
+| ------------------ | -------------------------- |
+| `cdtk-doctor`      | 环境体检，清残留会话目录   |
+| `cdtk-install`     | 列应用、装 IPA、卸载       |
+| `cdtk-ctrl`        | 列进程、拉起 App、注入触控 |
+| `cdtk-notify`      | 调起 App 前后推横幅        |
+| `cdtk-profile`     | 列 / 装 / 删描述文件       |
+| `cdtk-fs`          | 读沙盒与媒体分区           |
+| `cdtk-diag`        | 电池数据、内核日志         |
+| `cdtk-crash`       | 列取并解析 `.ips`          |
+| `cdtk-inspect`     | 列 WebKit 页面、注入 JS    |
+| `cdtk-springboard` | 备份 / 下发主屏布局        |
+| `cdtk-proc`        | Jetsam 豁免、发信号        |
 
 ---
 
@@ -144,14 +147,13 @@ cdtk-profile list
 一瞬间收到 `SIGKILL`：界面报中断，日志里 PID 直接跳变、没有任何退出流程，系统崩溃目录里也没有对应 `.ips`
 （只有 App 自己写的 `FOREGROUND CRASH (SIGKILL — app was in use)`）。
 
-实测四种组合（同一进程 PID 贯穿）：
+实测（同一进程 PID 贯穿）：
 
-| 切走               | 切回                                                                                      | 结果 |
-| ------------------ | ----------------------------------------------------------------------------------------- | ---- |
-| `cdtk-ctrl launch` | `cdtk-ctrl launch <宿主>`                                                                 | 被杀 |
-| `cdtk-ctrl launch` | 人工点图标                                                                                | 正常 |
-| `cdtk-ctrl launch` | 其它走 SpringBoard 正常启动的通道（iCTRL `launch_app`、Swipt `device.launchApplication`） | 正常 |
-| 其它通道           | 任意                                                                                      | 正常 |
+| 切回方式                                              | 结果 |
+| ----------------------------------------------------- | ---- |
+| `cdtk-ctrl launch <宿主>`                             | 被杀 |
+| 人工点图标                                            | 正常 |
+| iCTRL `launch_app` / Swipt `device.launchApplication` | 正常 |
 
 原因是它走 DVT / AppService 那条 RSD 服务，对宿主自己调用会触发系统终止；拉起别的 App 不受影响。
 **规则**：切走随便用，切回宿主走普通启动路径。

@@ -74,19 +74,22 @@ one real RSD handshake, and prints the command to fix whatever fails.
 
 ## Tools
 
-| Command            | Service                  | Does                                          |
-| ------------------ | ------------------------ | --------------------------------------------- |
-| `cdtk-doctor`      | self-check               | Environment audit, sweeps old session dirs    |
-| `cdtk-install`     | `installation_proxy`     | List apps, install an IPA, uninstall          |
-| `cdtk-ctrl`        | `dtuhidd` / `appservice` | List processes, launch apps, inject touches   |
-| `cdtk-notify`      | `apple-notification`     | System banner around app launches             |
-| `cdtk-profile`     | `MCInstall`              | List / install / remove profiles              |
-| `cdtk-fs`          | `house_arrest`           | Read an app container and the media partition |
-| `cdtk-diag`        | `diagnostics_relay`      | Battery data, kernel log                      |
-| `cdtk-crash`       | `crashreportcopymobile`  | List and parse `.ips`                         |
-| `cdtk-inspect`     | `webinspector`           | List WebKit pages, inject JS                  |
-| `cdtk-springboard` | `springboard.iconstate`  | Back up / apply the home layout               |
-| `cdtk-proc`        | `processcontrol`         | Jetsam immunity, signals                      |
+Services underneath: `installation_proxy`, `dtuhidd`, `appservice`, `house_arrest`, `crashreportcopymobile`,
+`webinspector`, `MCInstall`, `springboard.iconstate`, `processcontrol`, `diagnostics_relay`.
+
+| Command            | Does                                          |
+| ------------------ | --------------------------------------------- |
+| `cdtk-doctor`      | Environment audit, sweeps old session dirs    |
+| `cdtk-install`     | List apps, install an IPA, uninstall          |
+| `cdtk-ctrl`        | List processes, launch apps, inject touches   |
+| `cdtk-notify`      | System banner around app launches             |
+| `cdtk-profile`     | List / install / remove profiles              |
+| `cdtk-fs`          | Read an app container and the media partition |
+| `cdtk-diag`        | Battery data, kernel log                      |
+| `cdtk-crash`       | List and parse `.ips`                         |
+| `cdtk-inspect`     | List WebKit pages, inject JS                  |
+| `cdtk-springboard` | Back up / apply the home layout               |
+| `cdtk-proc`        | Jetsam immunity, signals                      |
 
 ---
 
@@ -149,14 +152,13 @@ The host app is the one running this toolchain. Launching it through `cdtk-ctrl 
 shutdown sequence, and there is no matching `.ips` in the system crash store (only the app's own
 `FOREGROUND CRASH (SIGKILL — app was in use)` marker).
 
-Measured, one PID across all four combinations:
+Measured, one PID throughout:
 
-| Switch away        | Switch back                                                                          | Result |
-| ------------------ | ------------------------------------------------------------------------------------ | ------ |
-| `cdtk-ctrl launch` | `cdtk-ctrl launch <host>`                                                            | killed |
-| `cdtk-ctrl launch` | tap the icon                                                                         | fine   |
-| `cdtk-ctrl launch` | any SpringBoard-normal launch (iCTRL `launch_app`, Swipt `device.launchApplication`) | fine   |
-| any other channel  | any                                                                                  | fine   |
+| Switch back by                                        | Result |
+| ----------------------------------------------------- | ------ |
+| `cdtk-ctrl launch <host>`                             | killed |
+| tapping the icon                                      | fine   |
+| iCTRL `launch_app` / Swipt `device.launchApplication` | fine   |
 
 It goes through the DVT / AppService RSD service, and using it on the host itself triggers the termination.
 Launching any other app with it is unaffected. **Rule**: switch away however you like; switch back through a normal
