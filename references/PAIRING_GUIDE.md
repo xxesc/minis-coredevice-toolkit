@@ -26,15 +26,12 @@ python3 -c "import plistlib;print(sorted(plistlib.load(open('pairing.plist','rb'
 
 ## Getting one
 
-Generate it on a computer with `pymobiledevice3`, then copy the resulting `.plist` to the device:
+What this repository has verified: enable Developer Mode on the phone, pair with **StikPair** on the device, then export
+the pairing record (`.plist`) from StikPair. The exported file should contain the three keys above; put it in one of the
+lookup paths below.
 
-```bash
-pip install pymobiledevice3
-pymobiledevice3 remote pair
-```
-
-The record should contain the three keys above. Other ways of producing one (on-device tools) are not verified by
-this repository — try them yourself if you need to.
+Other ways (for example generating it on a computer with `pymobiledevice3 remote pair`) are not verified here — try them
+yourself if you need to.
 
 > A `lockdown` record (`/var/db/lockdown/<UDID>.plist`) is not a pairing record: it carries
 > `HostCertificate` / `HostPrivateKey` / `RootCertificate` and none of `identifier` / `private_key` / `public_key`.

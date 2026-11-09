@@ -26,14 +26,10 @@ python3 -c "import plistlib;print(sorted(plistlib.load(open('pairing.plist','rb'
 
 ## 获取
 
-在电脑上用 `pymobiledevice3` 生成，再把生成的 `.plist` 传进设备：
+本仓库验证过的做法：在手机上开启「开发者模式」，用 **StikPair** 完成配对，再从 StikPair 里导出配对文件（`.plist`）。
+导出的文件里应当能看到上面三个键，直接放进下面的搜索路径即可。
 
-```bash
-pip install pymobiledevice3
-pymobiledevice3 remote pair
-```
-
-生成的记录里应当能看到上面三个键。别的生成方式（各类设备内工具）本仓库没有验证，需要时自己试。
+其它方式（例如在电脑上用 `pymobiledevice3 remote pair` 生成）本仓库没有验证过，需要时自己试。
 
 > `lockdown` 记录（`/var/db/lockdown/<UDID>.plist`）不是配对记录：它存的是
 > `HostCertificate` / `HostPrivateKey` / `RootCertificate`，没有 `identifier` / `private_key` / `public_key`，
