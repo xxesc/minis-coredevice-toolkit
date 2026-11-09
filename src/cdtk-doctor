@@ -334,8 +334,32 @@ class Doctor:
         else:
             return 1
 
+
+def cleanup_stale_temp_dirs(max_age_s=86400):
+    """清掉被 timeout/外部终止后残留的 /tmp/cdtk_* 会话临时目录（默认只清 1 天以上的）。"""
+    removed = 0
+    now = time.time()
+    try:
+        for name in os.listdir("/tmp"):
+            if not name.startswith("cdtk_"):
+                continue
+            path = os.path.join("/tmp", name)
+            try:
+                if os.path.isdir(path) and now - os.path.getmtime(path) > max_age_s:
+                    shutil.rmtree(path, ignore_errors=True)
+                    removed += 1
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return removed
+
 async def main():
     print_header()
+    swept = cleanup_stale_temp_dirs()
+    if swept:
+        is_zh = "--zh" in sys.argv or os.environ.get("CDTK_LANG", "").lower().startswith("zh")
+        print(f"  🧹 {'Cleaned stale session dirs' if not is_zh else '已清理残留会话临时目录'}: {swept} in /tmp\n")
     doc = Doctor()
     doc.check_system_deps()
     doc.check_python_deps()
