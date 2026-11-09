@@ -240,3 +240,33 @@ UUID actually used.
 ## 📄 License
 
 This project is licensed under the [MIT License](LICENSE).
+
+
+**Q: `cdtk-ctrl launch` on the host app's own bundle ID gets the process killed?**
+
+The host app is the one running this toolchain. Bringing it back to the foreground with
+`cdtk-ctrl launch <host bundle id>` makes the process receive `SIGKILL` the moment it returns to the foreground:
+the UI reports an interruption, the log shows a PID change with no shutdown sequence, and there is no matching
+`.ips` in the system crash store (only the app's own `FOREGROUND CRASH (SIGKILL — app was in use)` marker).
+
+Measured on device (one PID across all four combinations):
+
+| Switch away | Switch back | Result |
+|---|---|---|
+| `cdtk-ctrl launch` | `cdtk-ctrl launch <host>` | killed |
+| `cdtk-ctrl launch` | user taps the icon | fine |
+| `cdtk-ctrl launch` | any SpringBoard-normal launch (iCTRL `launch_app`, Swipt `device.launchApplication`) | fine |
+| any other channel | any | fine |
+
+`cdtk-ctrl launch` goes through the DVT / AppService RSD service; using it on the host itself triggers the termination.
+Launching any other app with it is unaffected.
+
+**Rule**: use `cdtk-ctrl launch` freely to switch away; switch back through a normal launch path (iCTRL, Swipt, or a tap),
+never through `cdtk-ctrl launch`.
+
+**Q: Does the tunnel keep resources after a command finishes?**
+
+No. Every `cdtk-*` call is its own process; the RSD session and the node relay child are released on exit
+(measured: no leftover process and no listening port one second after exit). What stays behind is an empty
+`/tmp/cdtk_*` directory (with a 0-byte `relay.sock`) and the `/tmp/.cdtk_rsd_port.json` port cache, reused next time.
+Only sessions killed by `timeout` leave the directory behind.

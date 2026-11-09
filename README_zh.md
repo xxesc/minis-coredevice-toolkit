@@ -240,3 +240,28 @@ remoted 的失败有两种形态，只看 TCP 连通性区分不出来：
 ## 📄 开源许可证 (License)
 
 本项目基于 [MIT License](LICENSE) 许可协议发布。
+
+**Q：用 `cdtk-ctrl launch` 把宿主 App 自己拉回前台，进程被系统杀掉？**
+
+宿主 App 指正在运行本工具链的那个 App。用 `cdtk-ctrl launch <宿主 bundle id>` 把它自己重新拉到前台时，
+进程会在回到前台的一瞬间收到 `SIGKILL`：界面报「已中断」，日志表现为 PID 变化、没有任何退出流程，
+系统崩溃目录里也没有对应 `.ips`（只有 App 自己写的 `FOREGROUND CRASH (SIGKILL — app was in use)`）。
+
+真机实测（同一进程 PID 贯穿，四种组合）：
+
+| 切走 | 切回 | 结果 |
+|---|---|---|
+| `cdtk-ctrl launch` | `cdtk-ctrl launch <宿主>` | ❌ 被杀 |
+| `cdtk-ctrl launch` | 人工点图标切回 | ✅ 正常 |
+| `cdtk-ctrl launch` | 其它走 SpringBoard 正常启动的通道（iCTRL `launch_app`、Swipt `device.launchApplication`） | ✅ 正常 |
+| 其它通道 | 任意 | ✅ 正常 |
+
+原因是 `cdtk-ctrl launch` 走 DVT / AppService 那条 RSD 服务，拉起**宿主自己**会触发系统终止；拉起其它 App 不受影响。
+
+**规则**：切走随便用 `cdtk-ctrl launch`；切回宿主改用普通启动路径（iCTRL、Swipt，或人工点图标），不要用 `cdtk-ctrl launch`。
+
+**Q：命令跑完后隧道还占着资源吗？**
+
+不占。`cdtk-*` 每条命令是独立进程，退出即释放 RSD 会话与 node 桥接子进程（实测退出后 1 秒内无残留进程、无监听端口）。
+只会在 `/tmp` 残留一个空的 `cdtk_*` 目录（内含 0 字节 `relay.sock`）和 `/tmp/.cdtk_rsd_port.json` 端口缓存（下次复用），
+两者都不影响功能；被 `timeout` 强行杀掉的会话才会把目录留下。
