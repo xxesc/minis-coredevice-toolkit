@@ -167,8 +167,8 @@ calling it on the host itself triggers the termination; launching other apps is 
 **Q5: Does the tunnel keep resources after a command finishes**
 
 No. Each command is its own process; the RSD session and the Node child are released on exit (single observation: no
-leftover process and no listening port one second after exit). A clean exit leaves nothing behind; a session interrupted by `timeout` or SIGKILL leaves an empty directory, and `cdtk-doctor`
-sweeps those older than a day once nothing is listening on them. `/tmp/.cdtk_rsd_port.json` (the port cache) is kept by design.
+leftover process and no listening port one second after exit). A clean exit leaves nothing behind; a session interrupted by `timeout` or SIGKILL leaves a directory containing `relay.sock`,
+and `cdtk-doctor` sweeps those older than a day whose pid is gone (`--no-sweep` skips the sweep). `/tmp/.cdtk_rsd_port.json` (the port cache) is kept by design.
 
 ---
 

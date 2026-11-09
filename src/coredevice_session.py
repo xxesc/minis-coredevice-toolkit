@@ -510,6 +510,11 @@ class CoreDeviceSession:
         self.tmp_dir = tempfile.mkdtemp(prefix="cdtk_")
         os.chmod(self.tmp_dir, 0o700)
         self.sock_path = os.path.join(self.tmp_dir, "relay.sock")
+        try:  # 供 cdtk-doctor 判活用：清理时绝不碰仍在运行的会话
+            with open(os.path.join(self.tmp_dir, "pid"), "w") as f:
+                f.write(str(os.getpid()))
+        except Exception:
+            pass
 
         try:
             # 安全加固：PSK 绝不通过 argv 传递 (ps 可见)，改由 stdin 安全管道直接输入

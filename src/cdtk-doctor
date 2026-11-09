@@ -225,9 +225,9 @@ class Doctor:
             self.warnings.append((
                 f"RSD listener drifted to port {found} (preferred {preferred})" if not is_zh
                 else f"RSD listener 已漂移到端口 {found}（首选 {preferred}）",
-                (f"cdtk uses {found} automatically and caches it in /tmp/.cdtk_rsd_port.json.\n"
+                (f"cdtk uses {found} automatically; the next cdtk command caches it in /tmp/.cdtk_rsd_port.json.\n"
                  f"      Pin it if you prefer: export CDTK_RSD_PORT={found}") if not is_zh else
-                (f"cdtk 已自动使用 {found} 并缓存到 /tmp/.cdtk_rsd_port.json；\n"
+                (f"cdtk 已自动使用 {found}；下次任意 cdtk 命令会把它写进 /tmp/.cdtk_rsd_port.json；\n"
                  f"      需要固定可执行: export CDTK_RSD_PORT={found}")
             ))
             ok_msg = f"Port reachable after drift: {self.host}:{found}" if not is_zh else f"端口漂移已自动修复，连通 {self.host}:{found}"
@@ -287,7 +287,7 @@ class Doctor:
             w_ok = ("Pair-Verify succeeded; Developer Mode state is NOT verified here"
                     if not is_zh else "Pair-Verify 已通过；开发者模式状态未在此校验")
             print(f"  {PASS} {h_ok}")
-            print(f"  {PASS} {w_ok}")
+            print(f"  ℹ️  {w_ok}")
         except Exception as e:
             err_str = str(e)
             fail_h = f"Apple protocol handshake failed: {err_str}" if not is_zh else f"苹果底层握手失败: {err_str}"
@@ -351,7 +351,11 @@ class Doctor:
 
 
 def cleanup_stale_temp_dirs(max_age_s=86400):
-    """清掉被 timeout/外部终止后残留的 /tmp/cdtk_* 会话临时目录（默认只清 1 天以上的）。"""
+    """清掉被 timeout/外部终止后残留的 /tmp/cdtk_* 会话临时目录（默认只清 1 天以上的）。
+
+    判活用会话目录里由 CoreDeviceSession 写下的 pid 文件，**不连接 relay.sock**：
+    那个 socket 一被连上，Node 桥接就会把隧道 end 掉，反而杀掉正在跑的会话。
+    """
     removed = 0
     now = time.time()
     try:
@@ -362,16 +366,16 @@ def cleanup_stale_temp_dirs(max_age_s=86400):
             try:
                 if not os.path.isdir(path) or now - os.path.getmtime(path) <= max_age_s:
                     continue
-                sock = os.path.join(path, "relay.sock")
-                if os.path.exists(sock):
-                    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                    probe.settimeout(0.2)
+                pid_file = os.path.join(path, "pid")
+                if os.path.exists(pid_file):
                     try:
-                        probe.connect(sock)   # a live session still listens: leave it alone
-                        probe.close()
+                        pid = int(open(pid_file).read().strip())
+                        os.kill(pid, 0)          # 活着就跳过
                         continue
-                    except Exception:
-                        probe.close()
+                    except (ProcessLookupError, ValueError):
+                        pass
+                    except PermissionError:
+                        continue
                 shutil.rmtree(path, ignore_errors=True)
                 removed += 1
             except Exception:
@@ -380,9 +384,10 @@ def cleanup_stale_temp_dirs(max_age_s=86400):
         pass
     return removed
 
+
 async def main():
     print_header()
-    swept = cleanup_stale_temp_dirs()
+    swept = 0 if "--no-sweep" in sys.argv else cleanup_stale_temp_dirs()
     if swept:
         print(f"  🧹 {'Cleaned stale session dirs' if not is_zh else '已清理残留会话临时目录'}: {swept} in /tmp\n")
     doc = Doctor()

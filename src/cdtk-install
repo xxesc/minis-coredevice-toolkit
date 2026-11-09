@@ -273,7 +273,7 @@ async def cmd_install(args):
         need_sign = True
 
     if not need_sign and (getattr(args, "bundle_id", None) or getattr(args, "name", None)):
-        print("⚠️  -b / -n 只在重新签名时生效；本次 IPA 已带签名且未给 -s，这两个参数会被忽略。",
+        print("⚠️  -b / -n 只在重新签名时生效；本次没有重签（IPA 已带签名且未给 -s，或指定了 --no-sign），这两个参数会被忽略。",
               file=sys.stderr)
 
     if need_sign:

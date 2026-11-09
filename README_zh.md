@@ -158,7 +158,7 @@ cdtk-profile list
 **Q5：命令跑完后隧道还占资源吗**
 
 不占。每条命令是独立进程，退出即释放 RSD 会话和 Node 子进程（单机观察：退出后 1 秒内查不到残留进程与监听端口）。
-正常退出不会留目录；被 `timeout` 或 SIGKILL 打断的会话会剩下空目录，`cdtk-doctor` 每次启动清理一天以上、且确认没有会话在监听的。
+正常退出不会留目录；被 `timeout` 或 SIGKILL 打断的会话会剩下一个含 `relay.sock` 的目录；`cdtk-doctor` 每次启动清理一天以上、且进程已不在的（`--no-sweep` 可跳过清理）。
 `/tmp/.cdtk_rsd_port.json` 端口缓存是设计如此，会保留。
 
 ---
