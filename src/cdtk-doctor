@@ -284,7 +284,8 @@ class Doctor:
             writer.close()
             await writer.wait_closed()
             h_ok = "Apple Pair-Verify protocol handshake successful (PSK negotiated)" if not is_zh else "苹果底层 Pair-Verify 协议握手成功 (PSK 协商正常)"
-            w_ok = "iPhone is unlocked, awake, and in Developer Mode" if not is_zh else "iPhone 处于解锁亮屏与开发者就绪状态"
+            w_ok = ("Pair-Verify succeeded; Developer Mode state is NOT verified here"
+                    if not is_zh else "Pair-Verify 已通过；开发者模式状态未在此校验")
             print(f"  {PASS} {h_ok}")
             print(f"  {PASS} {w_ok}")
         except Exception as e:
