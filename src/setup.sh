@@ -74,7 +74,7 @@ cp -f "$SCRIPT_DIR/tls_psk_proxy.js" "$SP_DIR/"
 # 6. 注册 CLI。
 echo "🔧 注册全局 CLI 命令 (cdtk-*)..."
 mkdir -p /usr/local/bin
-for tool in cdtk-install cdtk-ctrl cdtk-profile cdtk-fs cdtk-diag cdtk-crash cdtk-inspect cdtk-springboard cdtk-proc cdtk-doctor; do
+for tool in cdtk-install cdtk-ctrl cdtk-profile cdtk-fs cdtk-diag cdtk-crash cdtk-inspect cdtk-springboard cdtk-proc cdtk-doctor cdtk-notify; do
   if [ -f "$SCRIPT_DIR/$tool" ]; then
     chmod +x "$SCRIPT_DIR/$tool"
     ln -sf "$SCRIPT_DIR/$tool" "/usr/local/bin/$tool"

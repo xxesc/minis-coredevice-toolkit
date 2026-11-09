@@ -118,7 +118,7 @@ def main():
     p_app = subparsers.add_parser("app", help="穿透第三方应用沙盒容器 (Documents/Library)")
     a_sub = p_app.add_subparsers(dest="subaction", required=True)
     a_ls = a_sub.add_parser("ls", help="列出应用沙盒目录")
-    a_ls.add_argument("bundle_id", help="应用 Bundle Identifier (如 com.nssurge.inc.surge-ios.1)")
+    a_ls.add_argument("bundle_id", help="应用 Bundle Identifier (如 com.example.demo)")
     a_ls.add_argument("path", nargs="?", default="", help="沙盒相对路径")
     a_cat = a_sub.add_parser("cat", help="输出应用沙盒文件内容")
     a_cat.add_argument("bundle_id", help="应用 Bundle Identifier")

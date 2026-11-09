@@ -152,7 +152,13 @@ class Doctor:
                 print(f"  {PASS} {ok_perm}")
 
             lbl_udid = "Device UDID" if not is_zh else "设备标识符 (UDID)"
-            print(f"  {PASS} {lbl_udid}: {rec.get('identifier')}")
+            ident = str(rec.get('identifier') or "")
+            if "--show-udid" in sys.argv:
+                shown = ident
+            else:
+                shown = (ident[:8] + "…") if len(ident) > 8 else "…"
+            hint = "" if "--show-udid" in sys.argv else (" (masked; --show-udid to reveal)" if not is_zh else "（已打码，--show-udid 可显示）")
+            print(f"  {PASS} {lbl_udid}: {shown}{hint}")
             return rec
         except Exception as e:
             err_p = f"Failed to parse pairing file: {e}" if not is_zh else f"解析配对文件失败: {e}"

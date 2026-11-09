@@ -2,7 +2,8 @@
 
 **English | [中文](PAIRING_GUIDE_zh.md)**
 
-The RSD tunnel authenticates with a RemotePairing record (`.plist`) over SRP / TLS. Treat that file as a device credential.
+The RSD tunnel authenticates with a RemotePairing record (`.plist`) over SRP / TLS. Treat that file as a device
+credential.
 
 ---
 
@@ -10,11 +11,9 @@ The RSD tunnel authenticates with a RemotePairing record (`.plist`) over SRP / T
 
 `load_pairing()` accepts three top-level keys and skips any file missing one:
 
-| Key           | Type   | Meaning                                         |
-| ------------- | ------ | ----------------------------------------------- |
-| `identifier`  | string | Pairing ID, also used as the RSD handshake UUID |
-| `private_key` | data   | Ed25519 private key                             |
-| `public_key`  | data   | Ed25519 public key                              |
+- `identifier` — pairing ID, also used as the RSD handshake UUID
+- `private_key` — Ed25519 private key
+- `public_key` — Ed25519 public key
 
 Check a candidate file:
 
@@ -26,45 +25,38 @@ python3 -c "import plistlib;print(sorted(plistlib.load(open('pairing.plist','rb'
 
 ## Getting one
 
-With Developer Mode enabled on the phone, pair using either app below and export the pairing record (`.plist`), then put
-it in one of the lookup paths. Both produce a usable file:
+Enable Developer Mode on the phone, pair with either app below, then export the record:
 
-| App                          | Notes                                       |
-| ---------------------------- | ------------------------------------------- |
-| **StikPair**                 | Pair, then export the `.plist` from the app |
-| **wloc** (`com.yu9191.wloc`) | Also exports a pairing record               |
+- **StikPair** — pair, then export the `.plist` from the app
+- **wloc** — also exports a pairing record
 
-The exported file should contain the three keys above.
+The exported file should contain the three keys above. Other ways (for example `pymobiledevice3 remote pair` on a
+computer) are not verified by this repository — try them yourself if you need to.
 
-Other ways (for example generating it on a computer with `pymobiledevice3 remote pair`) are not verified here — try them
-yourself if you need to.
-
-> A `lockdown` record (`/var/db/lockdown/<UDID>.plist`) is not a pairing record: it carries
-> `HostCertificate` / `HostPrivateKey` / `RootCertificate` and none of `identifier` / `private_key` / `public_key`.
-> Putting it in the pairing folder does nothing.
+> A `lockdown` record (`/var/db/lockdown/<UDID>.plist`) is not a pairing record: it carries `HostCertificate` /
+> `HostPrivateKey` / `RootCertificate` and none of the three keys above.
 
 ---
 
 ## Where it is looked up
 
-| Order | Location                                                           |
-| ----- | ------------------------------------------------------------------ |
-| 1     | CLI argument, e.g. `cdtk-install --pairing /path/to/pairing.plist` |
-| 2     | Environment variable `CDTK_PAIRING_FILE`                           |
-| 3     | `/root/.cdtk/pairing/*.plist`                                      |
-| 4     | `/var/minis/workspace/cdtk/*.plist`                                |
+`find_pairing_file()` searches in this order:
 
-The current working directory is **not** searched by default; set `CDTK_ALLOW_CWD_PAIRING=1` if you need that.
+1. the file named by `CDTK_PAIRING_FILE` (recommended)
+2. `/root/.cdtk/pairing/*.plist`
+3. `/var/minis/workspace/cdtk/*.plist`
+4. the current working directory, only when `CDTK_ALLOW_CWD_PAIRING=1`
+
+Entry 3 is a directory shared by every session inside Minis (`0755`); a key stored there is readable by other sessions.
+Prefer 1 or 2, and keep the file at `0600`.
 
 ---
 
 ## Permissions
 
-| State                      | Behaviour                                             |
-| -------------------------- | ----------------------------------------------------- |
-| `0600`                     | Used as is                                            |
-| Too open (e.g. `0644`)     | Tightened to `0600` when `chmod` works                |
-| Filesystem ignores `chmod` | Copied to `/root/.cdtk/pairing/` and locked to `0600` |
+- `0600`: used as is;
+- too open (e.g. `0644`): tightened to `0600` when `chmod` works;
+- filesystem ignores `chmod`: copied to `/root/.cdtk/pairing/` and locked to `0600`.
 
 ---
 
@@ -74,3 +66,5 @@ The current working directory is **not** searched by default; set `CDTK_ALLOW_CW
   upload it anywhere.
 - CDTK never prints the private key or the PSK. `cdtk-install --password` does pass the **certificate** password (not the
   pairing key) to `zsign` on the command line, so it can show up in `ps` for a moment.
+- `cdtk-doctor` masks the device identifier by default; `--show-udid` prints it in full. When pasting its output into an
+  issue, drop section 3 anyway.
