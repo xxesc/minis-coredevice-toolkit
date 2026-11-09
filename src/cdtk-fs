@@ -15,13 +15,17 @@ from pymobiledevice3.services.afc import AfcService
 from pymobiledevice3.services.house_arrest import HouseArrestService
 
 async def get_app_service(rsd, bundle_id):
+    first_err = None
     try:
         h = HouseArrestService(rsd, documents_only=False)
         await h.send_command(bundle_id, "VendContainer")
         return h, "container"
-    except Exception:
-        pass
-    
+    except Exception as e:
+        # VendContainer 被拒是正常的（应用没声明容器共享），但其它错误不该被吞掉
+        if type(e).__name__ not in ("HouseArrestError", "PyMobileDevice3Exception", "RuntimeError"):
+            raise
+        first_err = e
+
     try:
         h = HouseArrestService(rsd, documents_only=True)
         await h.send_command(bundle_id, "VendDocuments")
@@ -58,11 +62,11 @@ async def cmd_media_pull(args):
     print(f"⚡ 正在从媒体分区导出文件: {args.remote_path} -> {args.local_path}...")
     async with CoreDeviceSession() as s:
         afc = AfcService(s.rsd)
-        data = await afc.get_file_contents(args.remote_path)
         os.makedirs(os.path.dirname(os.path.abspath(args.local_path)), exist_ok=True)
-        with open(args.local_path, "wb") as f:
-            f.write(data)
-        print(f"✅ 导出成功！保存至本地: {args.local_path} ({len(data)} 字节)")
+        # 流式落盘：get_file_contents 会把整个文件读进内存，大文件会直接把宿主进程撑爆
+        await afc.pull(args.remote_path, args.local_path)
+        size = os.path.getsize(args.local_path)
+        print(f"✅ 导出成功！保存至本地: {args.local_path} ({size} 字节)")
 
 async def cmd_app_ls(args):
     print(f"⚡ 正在穿透应用沙盒: {args.bundle_id}...")
@@ -87,11 +91,10 @@ async def cmd_app_pull(args):
     print(f"⚡ 正在从应用沙盒导出: {args.bundle_id}:{args.remote_path} -> {args.local_path}...")
     async with CoreDeviceSession() as s:
         h, _ = await get_app_service(s.rsd, args.bundle_id)
-        data = await h.get_file_contents(args.remote_path)
         os.makedirs(os.path.dirname(os.path.abspath(args.local_path)), exist_ok=True)
-        with open(args.local_path, "wb") as f:
-            f.write(data)
-        print(f"✅ 导出成功！保存至本地: {args.local_path} ({len(data)} 字节)")
+        await h.pull(args.remote_path, args.local_path)
+        size = os.path.getsize(args.local_path)
+        print(f"✅ 导出成功！保存至本地: {args.local_path} ({size} 字节)")
 
 async def cmd_app_cat(args):
     async with CoreDeviceSession() as s:
@@ -131,13 +134,21 @@ def main():
     args = parser.parse_args()
 
     if args.target == "media":
-        if args.subaction == "ls": asyncio.run(cmd_media_ls(args))
-        elif args.subaction == "cat": asyncio.run(cmd_media_cat(args))
-        elif args.subaction == "pull": asyncio.run(cmd_media_pull(args))
+        if args.subaction == "ls": sys.exit(asyncio.run(cmd_media_ls(args)))
+        elif args.subaction == "cat": sys.exit(asyncio.run(cmd_media_cat(args)))
+        elif args.subaction == "pull": sys.exit(asyncio.run(cmd_media_pull(args)))
     elif args.target == "app":
-        if args.subaction == "ls": asyncio.run(cmd_app_ls(args))
-        elif args.subaction == "cat": asyncio.run(cmd_app_cat(args))
-        elif args.subaction == "pull": asyncio.run(cmd_app_pull(args))
+        if args.subaction == "ls": sys.exit(asyncio.run(cmd_app_ls(args)))
+        elif args.subaction == "cat": sys.exit(asyncio.run(cmd_app_cat(args)))
+        elif args.subaction == "pull": sys.exit(asyncio.run(cmd_app_pull(args)))
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except Exception as e:
+        print(f"❌ {e}", file=sys.stderr)
+        sys.exit(1)

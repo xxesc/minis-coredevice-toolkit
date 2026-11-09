@@ -196,9 +196,10 @@ async def cmd_pull(args):
             fp.write(content)
 
         print(f"✅ 导出成功！文件大小: {len(content)} 字节")
-        minis_rel = out_path.replace("/var/minis/", "")
-        encoded_path = quote(minis_rel, safe="/")
-        print(f"📄 本地预览: [{fname}](minis://{encoded_path})")
+        print(f"💾 文件位置: {out_path}")
+        if out_path.startswith("/var/minis/"):
+            encoded_path = quote(out_path[len("/var/minis/"):], safe="/")
+            print(f"📄 本地预览: [{fname}](minis://{encoded_path})")
 
 async def cmd_latest(args):
     print("⚡ 正在通过 CoreDevice RSD 查询最近一次系统崩溃/诊断日志...")
@@ -253,13 +254,21 @@ def main():
 
     args = p.parse_args()
     if args.subcommand == "list":
-        asyncio.run(cmd_list(args))
+        sys.exit(asyncio.run(cmd_list(args)))
     elif args.subcommand == "view":
-        asyncio.run(cmd_view(args))
+        sys.exit(asyncio.run(cmd_view(args)))
     elif args.subcommand == "pull":
-        asyncio.run(cmd_pull(args))
+        sys.exit(asyncio.run(cmd_pull(args)))
     elif args.subcommand == "latest":
-        asyncio.run(cmd_latest(args))
+        sys.exit(asyncio.run(cmd_latest(args)))
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except Exception as e:
+        print(f"❌ {e}", file=sys.stderr)
+        sys.exit(1)

@@ -46,7 +46,7 @@ HANDSHAKE_TIMEOUT = float(os.environ.get("CDTK_HANDSHAKE_TIMEOUT", "10"))
 # 策略：env 显式指定 → 缓存 → 首选端口，都失败再做 49152-65535 端口扫描 + RPPairing 指纹。
 # 只有在「连接级失败」时才扫描；握手超时说明端口活着、设备没醒，扫了也白扫。
 PORT_CACHE_FILE = os.environ.get("CDTK_RSD_PORT_CACHE", "/tmp/.cdtk_rsd_port.json")
-PORT_SCAN_TIMEOUT = float(os.environ.get("CDTK_RSD_SCAN_TIMEOUT", "0.4"))
+PORT_SCAN_TIMEOUT = float(os.environ.get("CDTK_RSD_SCAN_TIMEOUT", "1.2"))
 PORT_SCAN_CONCURRENCY = int(os.environ.get("CDTK_RSD_SCAN_CONCURRENCY", "128"))
 def _parse_scan_range():
     raw = os.environ.get("CDTK_RSD_SCAN_RANGE", "49152-65535")
@@ -212,8 +212,10 @@ def get_node_proxy_script():
 
 def find_pairing_file():
     env_p = os.environ.get("CDTK_PAIRING_FILE")
-    if env_p and os.path.exists(env_p):
-        return env_p
+    if env_p:
+        if os.path.exists(env_p):
+            return env_p
+        raise SystemExit("❌ CDTK_PAIRING_FILE 指向的文件不存在: %s" % env_p)
 
     # 默认只搜索受控目录。当前工作目录可能包含无关的 pairing 文件，
     # 仅在显式设置 CDTK_ALLOW_CWD_PAIRING=1 时纳入搜索。
@@ -280,9 +282,10 @@ def load_pairing(pairing_path=None, isolate=True):
             except Exception: pass
             
             isolated_target = secure_dir / Path(target).name
-            shutil.copyfile(target, isolated_target)
-            try: os.chmod(isolated_target, 0o600)
-            except Exception: pass
+            with open(target, "rb") as src, os.fdopen(
+                os.open(isolated_target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb"
+            ) as dst:
+                shutil.copyfileobj(src, dst)
             target = str(isolated_target)
 
     with open(target, "rb") as f:
@@ -471,7 +474,7 @@ class CoreDeviceSession:
                 self._close_ctrl()
                 if not queue and not scan_done:
                     scan_done = True
-                    if _port_scan_enabled() and _is_port_level_failure(e):
+                    if _port_scan_enabled() and not PORT_EXPLICIT and _is_port_level_failure(e):
                         print("[cdtk] 控制端口 %d 无 RSD 响应（%s），扫描 49152-65535 定位 remoted listener…"
                               % (ctl_port, type(e).__name__), file=sys.stderr)
                         found = await scan_for_rsd_port(HOST, skip=tried)
@@ -544,6 +547,7 @@ class CoreDeviceSession:
             client_params = handshake_res["clientParameters"]
             
             tunnel_service.USE_USERSPACE_TUNNEL = True
+            self._set_userspace_flag = True
             self.userspace_tun = UserspaceTun()
             self.userspace_tun.addr = client_params["address"]
             self.userspace_tun.mtu = client_params["mtu"]
@@ -582,6 +586,10 @@ class CoreDeviceSession:
         if getattr(userspace_tunnel, "_active_tunnel", None) is self:
             userspace_tunnel._active_tunnel = None
             userspace_tunnel.USERSPACE_ACTIVE = False
+        if getattr(self, "_set_userspace_flag", False):
+            try: tunnel_service.USE_USERSPACE_TUNNEL = False
+            except Exception: pass
+            self._set_userspace_flag = False
         self.tun = None
 
         if self._stdout_fd is not None:

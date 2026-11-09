@@ -108,9 +108,14 @@ HID_MAX = 65535
 
 def screen_size(display_info):
     """主屏原生像素分辨率 (宽, 高)，与截图一致；像素 = 逻辑点 × pointScale"""
-    primary = next(d for d in display_info["displays"] if d["primary"])
-    w, h = primary["nativeSize"]
-    return int(w), int(h)
+    displays = (display_info or {}).get("displays") or []
+    primary = next((d for d in displays if d.get("primary")), None)
+    if not primary:
+        raise ValueError("无法获取主屏分辨率（displays 里没有 primary）")
+    size = primary.get("nativeSize")
+    if not size or len(size) != 2:
+        raise ValueError("主屏 nativeSize 不可用: %r" % (size,))
+    return int(size[0]), int(size[1])
 
 def to_hid(x, y, size):
     """像素坐标 -> HID 坐标，取像素中心"""
@@ -130,7 +135,7 @@ async def resolve_points(rsd, args, points):
         async with DeviceInfoService(rsd) as info:
             size = screen_size(await info.get_display_info())
         return [to_hid(x, y, size) for x, y in points]
-    except ValueError as e:
+    except (ValueError, KeyError, TypeError) as e:
         sys.exit(f"❌ {e}")
 
 async def cmd_tap(args):
@@ -154,15 +159,20 @@ async def cmd_swipe(args):
             duration = max(args.duration, 0.05)
             interval = duration / steps
             
-            for i in range(steps):
-                t = i / steps
-                cx = round(x1 + (x2 - x1) * t)
-                cy = round(y1 + (y2 - y1) * t)
-                await hid.send_touchscreen(TOUCHSCREEN_STATE_CONTACT, cx, cy, service_id=tsid)
-                await asyncio.sleep(interval)
-            
-            await hid.send_touchscreen(TOUCHSCREEN_STATE_CONTACT, x2, y2, service_id=tsid)
-            await hid.send_touchscreen(TOUCHSCREEN_STATE_RELEASE, x2, y2, service_id=tsid)
+            try:
+                for i in range(steps):
+                    t = i / steps
+                    cx = round(x1 + (x2 - x1) * t)
+                    cy = round(y1 + (y2 - y1) * t)
+                    await hid.send_touchscreen(TOUCHSCREEN_STATE_CONTACT, cx, cy, service_id=tsid)
+                    await asyncio.sleep(interval)
+                await hid.send_touchscreen(TOUCHSCREEN_STATE_CONTACT, x2, y2, service_id=tsid)
+            finally:
+                # 设备侧不能在"按住"状态停住：中断/异常也必须发 RELEASE
+                try:
+                    await hid.send_touchscreen(TOUCHSCREEN_STATE_RELEASE, x2, y2, service_id=tsid)
+                except Exception:
+                    pass
             print(f"✅ 硬件滑动已执行完成！耗时: {duration:.2f}s, 步数: {steps}")
 
 def main():
@@ -171,7 +181,7 @@ def main():
 
     # launch
     p_launch = subparsers.add_parser("launch", help="通过 CoreDevice 原生拉起任意 App")
-    p_launch.add_argument("bundle_id", help="应用 Bundle Identifier (如 com.example.demo)")
+    p_launch.add_argument("bundle_id", help="应用 Bundle Identifier (如 com.meituan.imeituan)")
     p_launch.add_argument("--no-kill", action="store_true", help="不强制杀死已有实例")
     p_launch.add_argument("-r", "--reason", "--op", dest="reason", help="本次操作的具体目的与说明（用于向系统弹出提示横幅）")
     p_launch.add_argument("--no-notify", action="store_true", help="不发送系统横幅通知")
@@ -204,11 +214,19 @@ def main():
     p_swipe.add_argument("--service-id", type=int, default=257, help="HID ServiceID (默认 257)")
 
     args = parser.parse_args()
-    if args.subcommand == "launch": asyncio.run(cmd_launch(args))
-    elif args.subcommand == "procs": asyncio.run(cmd_procs(args))
-    elif args.subcommand == "hid-list": asyncio.run(cmd_hid_list(args))
-    elif args.subcommand == "tap": asyncio.run(cmd_tap(args))
-    elif args.subcommand == "swipe": asyncio.run(cmd_swipe(args))
+    if args.subcommand == "launch": sys.exit(asyncio.run(cmd_launch(args)))
+    elif args.subcommand == "procs": sys.exit(asyncio.run(cmd_procs(args)))
+    elif args.subcommand == "hid-list": sys.exit(asyncio.run(cmd_hid_list(args)))
+    elif args.subcommand == "tap": sys.exit(asyncio.run(cmd_tap(args)))
+    elif args.subcommand == "swipe": sys.exit(asyncio.run(cmd_swipe(args)))
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except Exception as e:
+        print(f"❌ {e}", file=sys.stderr)
+        sys.exit(1)

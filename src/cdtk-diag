@@ -179,11 +179,19 @@ def main():
 
     args = parser.parse_args()
     if args.subcommand in ("battery", "hw"):
-        asyncio.run(cmd_battery(args))
+        sys.exit(asyncio.run(cmd_battery(args)))
     elif args.subcommand == "perf":
-        asyncio.run(cmd_perf(args))
+        sys.exit(asyncio.run(cmd_perf(args)))
     elif args.subcommand == "log":
-        asyncio.run(cmd_syslog(args))
+        sys.exit(asyncio.run(cmd_syslog(args)))
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except Exception as e:
+        print(f"❌ {e}", file=sys.stderr)
+        sys.exit(1)

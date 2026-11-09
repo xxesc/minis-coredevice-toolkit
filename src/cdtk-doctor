@@ -369,9 +369,11 @@ def cleanup_stale_temp_dirs(max_age_s=86400):
                 pid_file = os.path.join(path, "pid")
                 if os.path.exists(pid_file):
                     try:
-                        pid = int(open(pid_file).read().strip())
-                        os.kill(pid, 0)          # 活着就跳过
-                        continue
+                        with open(pid_file) as f:
+                            pid = int(f.read().strip() or 0)
+                        if pid > 0:
+                            os.kill(pid, 0)      # 活着就跳过
+                            continue
                     except (ProcessLookupError, ValueError):
                         pass
                     except PermissionError:

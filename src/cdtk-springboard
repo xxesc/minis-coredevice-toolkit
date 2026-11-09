@@ -80,11 +80,28 @@ async def cmd_apply(args):
         print("❌ 无效的布局文件格式！根元素必须为页面列表 (list)。", file=sys.stderr)
         sys.exit(1)
 
-    print(f"🚀 正在通过 com.apple.springboard.iconstate 下发并热更新主屏布局...")
+    print("🚀 正在通过 com.apple.springboard.iconstate 下发并热更新主屏布局...")
     async with CoreDeviceSession(args.pairing) as s:
         sb = SpringBoardServicesService(s.rsd)
+        before = await sb.get_icon_state()
+        bak = f"{args.input}.bak.plist"
+        with open(bak, "wb") as f:
+            plistlib.dump(before, f)
+        print(f"🛟 下发前已自动备份当前布局: {bak}")
+
         await sb.set_icon_state(new_layout)
-        print("🎉 桌面布局更新指令已成功送达 SpringBoard！界面已即时刷新。")
+
+        # set_icon_state 不回包，只能回读比对；不一致就说明 SpringBoard 没接受
+        after = await sb.get_icon_state()
+        if after == new_layout:
+            print("🎉 桌面布局已生效（回读一致）。")
+            return 0
+        print("⚠️  下发后回读与目标布局不一致：SpringBoard 可能拒绝了这份布局，"
+              "或对它做了规范化（去重/追加未列出的 App）。", file=sys.stderr)
+        print(f"   当前实际布局已写入 {bak}.after.plist 供比对。", file=sys.stderr)
+        with open(bak + ".after.plist", "wb") as f:
+            plistlib.dump(after, f)
+        return 1
 
 def main():
     parser = argparse.ArgumentParser(
@@ -103,9 +120,17 @@ def main():
 
     args = parser.parse_args()
     if args.cmd == "backup":
-        asyncio.run(cmd_backup(args))
+        sys.exit(asyncio.run(cmd_backup(args)))
     elif args.cmd == "apply":
-        asyncio.run(cmd_apply(args))
+        sys.exit(asyncio.run(cmd_apply(args)))
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except Exception as e:
+        print(f"❌ {e}", file=sys.stderr)
+        sys.exit(1)
