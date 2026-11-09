@@ -171,7 +171,7 @@ def main():
 
     # launch
     p_launch = subparsers.add_parser("launch", help="通过 CoreDevice 原生拉起任意 App")
-    p_launch.add_argument("bundle_id", help="应用 Bundle Identifier (如 com.meituan.imeituan)")
+    p_launch.add_argument("bundle_id", help="应用 Bundle Identifier (如 com.example.demo)")
     p_launch.add_argument("--no-kill", action="store_true", help="不强制杀死已有实例")
     p_launch.add_argument("-r", "--reason", "--op", dest="reason", help="本次操作的具体目的与说明（用于向系统弹出提示横幅）")
     p_launch.add_argument("--no-notify", action="store_true", help="不发送系统横幅通知")
