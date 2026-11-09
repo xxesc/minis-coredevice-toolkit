@@ -111,6 +111,9 @@ cdtk-profile list
 ```
 
 Destructive subcommands (`install`, `uninstall`, `profile install`, `proc signal`) require `-y`.
+Every value in these examples is a placeholder: `com.example.demo` only shows the format and has nothing to do with any
+real app, and the `00008110-…` identifier that appears in `cdtk-doctor` output is a hand-written fake UDID
+(`00008110` is a public A15-generation prefix, the tail is a sequential sequence), not a device value.
 Known limit: `-b` / `-n` only apply when the IPA is actually re-signed; on an already-signed IPA without `-s` they are
 silently ignored.
 
@@ -173,6 +176,8 @@ those older than a day.
 
 - **Pairing record**: looked up via `CDTK_PAIRING_FILE` → `/root/.cdtk/pairing/` (0600) → `/var/minis/workspace/cdtk/`.
   The last one is shared by every session inside Minis — use it at your own risk; prefer the first two.
+- **Never commit a pairing record**: the `.plist` holds the device signing key; keep it out of repositories and
+  public shares.
 - **PSK**: handed to the Node child over stdin, never on a command line.
 - **Temp dirs**: `mkdtemp` + `0700` per session; removed on a clean exit, left behind if the process is killed.
 - **Routes**: adds one host route, `10.7.0.1/32`, to capture that loopback address; other routing rules are untouched.
