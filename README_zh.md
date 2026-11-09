@@ -174,6 +174,16 @@ cdtk-profile list
 
 ---
 
+## 维护
+
+改代码或改文档后跑一次：
+
+```bash
+sh tests/smoke.sh
+```
+
+它检查三件事：每个工具都能打印用法、README 里出现的每个 `--flag` 在对应脚本里真实存在、`setup.sh` 注册的工具集合与工具表一致。它不碰设备，也不联网。
+
 ## 许可
 
 [MIT](LICENSE)

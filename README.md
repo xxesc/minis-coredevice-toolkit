@@ -184,6 +184,16 @@ and `cdtk-doctor` sweeps those older than a day whose pid is gone (`--no-sweep` 
 
 ---
 
+## Testing
+
+After touching code or docs, run:
+
+```bash
+sh tests/smoke.sh
+```
+
+It checks three things: every tool prints usage, every `--flag` mentioned in the READMEs exists in the matching script, and the tool list in `setup.sh` matches the tool table. It does not touch the device or the network.
+
 ## License
 
 [MIT](LICENSE)
