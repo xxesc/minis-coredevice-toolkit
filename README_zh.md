@@ -70,19 +70,19 @@ cdtk-doctor --zh
 
 ## 工具矩阵
 
-| 命令 | 用到的服务 | 能做什么 |
-|---|---|---|
-| `cdtk-doctor` | 体检 | 环境自检：依赖、配对凭据、回环、真实握手；顺手清掉一天以上的残留会话目录 |
-| `cdtk-install` | `installation_proxy` | 列出已装应用、签名后直接装 IPA、卸载 |
-| `cdtk-ctrl` | `dtuhidd` / `appservice` | 枚举进程、拉起 App、注入真实触控（像素坐标）与滑动 |
-| `cdtk-notify` | `apple-notification` | 调起 App 前后推系统横幅 |
-| `cdtk-profile` | `MCInstall` | 列出 / 下发 / 移除描述文件（个人设备仍需在设置里确认一次） |
-| `cdtk-fs` | `house_arrest` + AFC | 穿透已授权 App 的沙盒（Documents / Library）、媒体分区读写 |
-| `cdtk-diag` | `diagnostics_relay` / `syslog` | 读电池设计容量、真实容量、循环次数；实时抓内核日志 |
-| `cdtk-crash` | `crashreportcopymobile` | 列出并解析 `.ips` 崩溃与资源报告 |
-| `cdtk-inspect` | `webinspector` | 列出 WebKit 页面、注入 JS、导出 Cookies / Storage |
-| `cdtk-springboard` | `springboard.iconstate` | 备份 / 下发主屏布局（Dock、各页、文件夹） |
-| `cdtk-proc` | `processcontrol` | 给目标进程加 Jetsam 免疫、发信号 |
+| 命令               | 服务                     | 作用                       |
+| ------------------ | ------------------------ | -------------------------- |
+| `cdtk-doctor`      | 自检                     | 环境体检，清残留会话目录   |
+| `cdtk-install`     | `installation_proxy`     | 列应用、装 IPA、卸载       |
+| `cdtk-ctrl`        | `dtuhidd` / `appservice` | 列进程、拉起 App、注入触控 |
+| `cdtk-notify`      | `apple-notification`     | 调起 App 前后推横幅        |
+| `cdtk-profile`     | `MCInstall`              | 列 / 装 / 删描述文件       |
+| `cdtk-fs`          | `house_arrest`           | 读沙盒与媒体分区           |
+| `cdtk-diag`        | `diagnostics_relay`      | 电池数据、内核日志         |
+| `cdtk-crash`       | `crashreportcopymobile`  | 列取并解析 `.ips`          |
+| `cdtk-inspect`     | `webinspector`           | 列 WebKit 页面、注入 JS    |
+| `cdtk-springboard` | `springboard.iconstate`  | 备份 / 下发主屏布局        |
+| `cdtk-proc`        | `processcontrol`         | Jetsam 豁免、发信号        |
 
 ---
 
@@ -111,10 +111,10 @@ cdtk-profile list
 
 两种失败形态，只看 TCP 连通性区分不出来：
 
-| 现象 | 含义 |
-|---|---|
-| `RST` / `ConnectionRefused` | 该端口的 listener 已经不在了 |
-| TCP 连上但 0 字节回包 | 回环层接住了，`remoted` 从不答话 |
+| 现象                        | 含义                             |
+| --------------------------- | -------------------------------- |
+| `RST` / `ConnectionRefused` | 该端口的 listener 已经不在了     |
+| TCP 连上但 0 字节回包       | 回环层接住了，`remoted` 从不答话 |
 
 `coredevice_session` 会做 RPPairing 指纹（回 `RPPairing` 魔数才算活着），并按
 `CDTK_RSD_PORT` → `/tmp/.cdtk_rsd_port.json` 缓存 → 49152 → 扫描 49152–65535 的顺序定位端口。
@@ -130,13 +130,13 @@ cdtk-profile list
 本工具链让 pair-verify 与 RSD 握手都出示配对记录里的 `identifier`，可用 `CDTK_HOST_UUID` 覆盖，
 `CDTK_DEBUG=1` 打印实际使用的 UUID。
 
-| 环境变量 | 作用 |
-|---|---|
-| `CDTK_RSD_PORT` | 显式指定控制端口（设置后不自动扫描） |
-| `CDTK_RSD_SCAN=0` | 关闭自动扫描 |
-| `CDTK_RSD_SCAN_RANGE=49152-50000` | 缩小扫描范围 |
-| `CDTK_HOST_UUID` | 覆盖 RSD 握手身份 |
-| `CDTK_DEBUG=1` | 打印握手 UUID 等调试信息 |
+| 环境变量                          | 作用                                 |
+| --------------------------------- | ------------------------------------ |
+| `CDTK_RSD_PORT`                   | 显式指定控制端口（设置后不自动扫描） |
+| `CDTK_RSD_SCAN=0`                 | 关闭自动扫描                         |
+| `CDTK_RSD_SCAN_RANGE=49152-50000` | 缩小扫描范围                         |
+| `CDTK_HOST_UUID`                  | 覆盖 RSD 握手身份                    |
+| `CDTK_DEBUG=1`                    | 打印握手 UUID 等调试信息             |
 
 **Q4：用 `cdtk-ctrl launch` 把宿主 App 自己拉回前台，进程会被杀掉**
 
@@ -146,12 +146,12 @@ cdtk-profile list
 
 实测四种组合（同一进程 PID 贯穿）：
 
-| 切走 | 切回 | 结果 |
-|---|---|---|
-| `cdtk-ctrl launch` | `cdtk-ctrl launch <宿主>` | 被杀 |
-| `cdtk-ctrl launch` | 人工点图标 | 正常 |
+| 切走               | 切回                                                                                      | 结果 |
+| ------------------ | ----------------------------------------------------------------------------------------- | ---- |
+| `cdtk-ctrl launch` | `cdtk-ctrl launch <宿主>`                                                                 | 被杀 |
+| `cdtk-ctrl launch` | 人工点图标                                                                                | 正常 |
 | `cdtk-ctrl launch` | 其它走 SpringBoard 正常启动的通道（iCTRL `launch_app`、Swipt `device.launchApplication`） | 正常 |
-| 其它通道 | 任意 | 正常 |
+| 其它通道           | 任意                                                                                      | 正常 |
 
 原因是它走 DVT / AppService 那条 RSD 服务，对宿主自己调用会触发系统终止；拉起别的 App 不受影响。
 **规则**：切走随便用，切回宿主走普通启动路径。

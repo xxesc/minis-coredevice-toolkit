@@ -1,95 +1,70 @@
-# 设备配对记录指南与安全规范
+# 配对记录指南
 
-**[English](PAIRING_GUIDE.md)** | **[中文说明](PAIRING_GUIDE_zh.md)**
+**[English](PAIRING_GUIDE.md) | 中文**
 
-连接 CoreDevice RSD 隧道需要一份有效的 remote pairing record（`.plist`），
-用于通过 Apple RemotePairing 的 SRP/TLS 握手。
-
----
-
-## ⚠️ 重要安全警告
-
-> **配对记录包含高度敏感的设备凭据**：
-> 配对文件里有设备的 **Ed25519 签名私钥** 和配对令牌。任何拿到这个文件的人，
-> 都拥有该设备的开发者级调试权限。
->
-> - **绝不公开**：不要上传到 GitHub、公共网盘或不可信的同步服务；
-> - **严格权限**：只允许属主读写：
->   ```bash
->   chmod 600 /path/to/pairing.plist
->   ```
-> - **会话保护**：CDTK 不打印配对私钥或 PSK。注意 `cdtk-install --password`
->   会把证书密码传给 `zsign` 的命令行，因此该密码（不是配对私钥）可能短暂
->   出现在 `ps` 中。
+RSD 隧道靠一份 RemotePairing 记录（`.plist`）完成 SRP / TLS 握手。这份文件是设备级凭据，请按下面的方式保管。
 
 ---
 
-## 必需格式
+## 格式
 
-`load_pairing()` 只读取三个顶层键：
+`load_pairing()` 只认三个顶层键，缺一个就跳过：
 
-```text
-identifier   (字符串)
-private_key  (bytes / data)
-public_key   (bytes / data)
-```
+| 键            | 类型   | 说明                             |
+| ------------- | ------ | -------------------------------- |
+| `identifier`  | string | 配对标识，同时作为 RSD 握手 UUID |
+| `private_key` | data   | Ed25519 私钥                     |
+| `public_key`  | data   | Ed25519 公钥                     |
 
-缺少任意一个，`find_pairing_file()` 都会跳过该文件。
-
-可以这样检查候选文件：
+检查候选文件：
 
 ```bash
-python3 -c "import plistlib;print(sorted(plistlib.load(open('pairing.plist','rb')).keys()))"
+python3 -c "import plistlib;print(sorted(plistlib.load(open('pairing.plist','rb'))))"
 ```
 
 ---
 
-## 获取配对记录（二选一）
+## 获取
 
-### 方法 1：SideStore / SideInstaller（设备内生成）
-如果设备上装有 **SideStore** 或 **SideInstaller**：
-1. 打开 App，按提示生成本地配对文件；
-2. 导出生成的 `pairing.plist`；
-3. 放入 CDTK 支持的搜索路径（见下文）。
-
-这是最简单的路径，且格式正确。
-
----
-
-### 方法 2：在电脑上用 `pymobiledevice3` 生成
-用 USB 连接 iPhone，在电脑上执行：
+在电脑上用 `pymobiledevice3` 生成，再把生成的 `.plist` 传进设备：
 
 ```bash
 pip install pymobiledevice3
 pymobiledevice3 remote pair
 ```
 
-把生成的 `.plist` 传到设备。使用前确认它包含
-`identifier`、`private_key`、`public_key` 三个键。
+生成的记录里应当能看到上面三个键。别的生成方式（各类设备内工具）本仓库没有验证，需要时自己试。
+
+> `lockdown` 记录（`/var/db/lockdown/<UDID>.plist`）不是配对记录：它存的是
+> `HostCertificate` / `HostPrivateKey` / `RootCertificate`，没有 `identifier` / `private_key` / `public_key`，
+> 放进配对目录也用不了。
 
 ---
 
-### 不支持：macOS 的 `lockdown` 记录
-`/var/db/lockdown/<UDID>.plist` 是 **lockdown** 记录
-（`HostCertificate`、`HostPrivateKey`、`RootCertificate` 等），
-不含 `identifier` / `private_key` / `public_key`，CDTK 无法使用。
-不要把它复制进配对目录。
+## 存放与搜索顺序
+
+| 顺序 | 位置                                                         |
+| ---- | ------------------------------------------------------------ |
+| 1    | CLI 参数，如 `cdtk-install --pairing /path/to/pairing.plist` |
+| 2    | 环境变量 `CDTK_PAIRING_FILE`                                 |
+| 3    | `/root/.cdtk/pairing/*.plist`                                |
+| 4    | `/var/minis/workspace/cdtk/*.plist`                          |
+
+当前工作目录默认**不搜索**；要用得显式设 `CDTK_ALLOW_CWD_PAIRING=1`。
 
 ---
 
-## 安全存放路径与搜索顺序
+## 权限
 
-CDTK 按以下顺序查找：
+| 情况                  | 行为                                      |
+| --------------------- | ----------------------------------------- |
+| 权限是 `0600`         | 直接使用                                  |
+| 权限过宽（如 `0644`） | 能 `chmod` 就收紧到 `0600`                |
+| 文件系统忽略 `chmod`  | 复制到 `/root/.cdtk/pairing/` 再锁 `0600` |
 
-1. **显式 CLI 参数**（如 `cdtk-install --pairing /path/to/pairing.plist`）；
-2. **环境变量 `CDTK_PAIRING_FILE`**；
-3. **私有沙盒**：`/root/.cdtk/pairing/*.plist`；
-4. **专用工作区目录**：`/var/minis/workspace/cdtk/*.plist`。
+---
 
-默认**不搜索**当前工作目录。确实需要时，设置
-`CDTK_ALLOW_CWD_PAIRING=1`。
+## 安全
 
-> ⚠️ **权限要求**：
-> 配对文件权限过宽（`0644`）时，CDTK 会尝试收紧到 `0600`。
-> 如果底层文件系统忽略 `chmod`（部分外接/共享目录），文件会被复制到
-> `/root/.cdtk/pairing/` 并设为 `0600`。
+- 配对记录里是设备签名私钥，拿到它等于拿到开发者级调试权限。不要提交到仓库、不要上传网盘。
+- CDTK 不打印私钥和 PSK；但 `cdtk-install --password` 会把**证书密码**（不是配对私钥）传给 `zsign` 命令行，可能短暂出现在 `ps` 里。

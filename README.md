@@ -74,19 +74,19 @@ one real RSD handshake, and prints the command to fix whatever fails.
 
 ## Tools
 
-| Command | Service | Does |
-|---|---|---|
-| `cdtk-doctor` | self-check | Environment audit; also sweeps session dirs older than a day |
-| `cdtk-install` | `installation_proxy` | List apps, sign + install an IPA, uninstall |
-| `cdtk-ctrl` | `dtuhidd` / `appservice` | List processes, launch apps, inject real touches (pixel coordinates) and swipes |
-| `cdtk-notify` | `apple-notification` | Post a system banner around app launches |
-| `cdtk-profile` | `MCInstall` | List / install / remove configuration profiles (a personal device still asks for confirmation once) |
-| `cdtk-fs` | `house_arrest` + AFC | Reach an authorized app's container (Documents / Library) and the media partition |
-| `cdtk-diag` | `diagnostics_relay` / `syslog` | Battery design capacity, real capacity, cycle count; live kernel log |
-| `cdtk-crash` | `crashreportcopymobile` | List and parse `.ips` crash and resource reports |
-| `cdtk-inspect` | `webinspector` | List WebKit pages, inject JS, dump cookies / storage |
-| `cdtk-springboard` | `springboard.iconstate` | Back up / apply the home-screen layout (Dock, pages, folders) |
-| `cdtk-proc` | `processcontrol` | Jetsam immunity for a target process, signals |
+| Command            | Service                  | Does                                          |
+| ------------------ | ------------------------ | --------------------------------------------- |
+| `cdtk-doctor`      | self-check               | Environment audit, sweeps old session dirs    |
+| `cdtk-install`     | `installation_proxy`     | List apps, install an IPA, uninstall          |
+| `cdtk-ctrl`        | `dtuhidd` / `appservice` | List processes, launch apps, inject touches   |
+| `cdtk-notify`      | `apple-notification`     | System banner around app launches             |
+| `cdtk-profile`     | `MCInstall`              | List / install / remove profiles              |
+| `cdtk-fs`          | `house_arrest`           | Read an app container and the media partition |
+| `cdtk-diag`        | `diagnostics_relay`      | Battery data, kernel log                      |
+| `cdtk-crash`       | `crashreportcopymobile`  | List and parse `.ips`                         |
+| `cdtk-inspect`     | `webinspector`           | List WebKit pages, inject JS                  |
+| `cdtk-springboard` | `springboard.iconstate`  | Back up / apply the home layout               |
+| `cdtk-proc`        | `processcontrol`         | Jetsam immunity, signals                      |
 
 ---
 
@@ -115,10 +115,10 @@ Every command supports `-h`.
 
 Two failure modes, and TCP reachability does not tell them apart:
 
-| Symptom | Meaning |
-|---|---|
-| `RST` / `ConnectionRefused` | Nothing is listening on that port any more |
-| TCP connects, 0 bytes back | The loopback layer accepted it, `remoted` never answers |
+| Symptom                     | Meaning                                                 |
+| --------------------------- | ------------------------------------------------------- |
+| `RST` / `ConnectionRefused` | Nothing is listening on that port any more              |
+| TCP connects, 0 bytes back  | The loopback layer accepted it, `remoted` never answers |
 
 `coredevice_session` probes for the `RPPairing` magic to tell a live listener from a silent one, and tries
 `CDTK_RSD_PORT` → the `/tmp/.cdtk_rsd_port.json` cache → 49152 → a scan of 49152–65535.
@@ -134,13 +134,13 @@ Two failure modes, and TCP reachability does not tell them apart:
 listener that peer had advertised. This toolchain sends the pairing record's `identifier` in both pair-verify and the
 RSD handshake; `CDTK_HOST_UUID` overrides it and `CDTK_DEBUG=1` prints what is actually used.
 
-| Variable | Effect |
-|---|---|
-| `CDTK_RSD_PORT` | Pin the control port (no scanning) |
-| `CDTK_RSD_SCAN=0` | Disable scanning |
-| `CDTK_RSD_SCAN_RANGE=49152-50000` | Narrow the scan |
-| `CDTK_HOST_UUID` | Override the RSD handshake identity |
-| `CDTK_DEBUG=1` | Print the handshake UUID and other details |
+| Variable                          | Effect                                     |
+| --------------------------------- | ------------------------------------------ |
+| `CDTK_RSD_PORT`                   | Pin the control port (no scanning)         |
+| `CDTK_RSD_SCAN=0`                 | Disable scanning                           |
+| `CDTK_RSD_SCAN_RANGE=49152-50000` | Narrow the scan                            |
+| `CDTK_HOST_UUID`                  | Override the RSD handshake identity        |
+| `CDTK_DEBUG=1`                    | Print the handshake UUID and other details |
 
 **Q4: `cdtk-ctrl launch` on the host app's own bundle id gets the process killed**
 
@@ -151,12 +151,12 @@ shutdown sequence, and there is no matching `.ips` in the system crash store (on
 
 Measured, one PID across all four combinations:
 
-| Switch away | Switch back | Result |
-|---|---|---|
-| `cdtk-ctrl launch` | `cdtk-ctrl launch <host>` | killed |
-| `cdtk-ctrl launch` | tap the icon | fine |
-| `cdtk-ctrl launch` | any SpringBoard-normal launch (iCTRL `launch_app`, Swipt `device.launchApplication`) | fine |
-| any other channel | any | fine |
+| Switch away        | Switch back                                                                          | Result |
+| ------------------ | ------------------------------------------------------------------------------------ | ------ |
+| `cdtk-ctrl launch` | `cdtk-ctrl launch <host>`                                                            | killed |
+| `cdtk-ctrl launch` | tap the icon                                                                         | fine   |
+| `cdtk-ctrl launch` | any SpringBoard-normal launch (iCTRL `launch_app`, Swipt `device.launchApplication`) | fine   |
+| any other channel  | any                                                                                  | fine   |
 
 It goes through the DVT / AppService RSD service, and using it on the host itself triggers the termination.
 Launching any other app with it is unaffected. **Rule**: switch away however you like; switch back through a normal
