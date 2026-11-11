@@ -91,6 +91,31 @@ async def cmd_battery(args):
             print(f"  • 充电适配器:       {desc} ({watts}W | {volt:.1f}V / {amp:.1f}A)")
         print("=" * 58)
 
+def _num(v):
+    """把任意来源的数值洗成 float 或 None（None/缺字段/非数字一律 None），供格式化前判断。"""
+    if isinstance(v, bool) or v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        return float(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+
+def _storage_line(storage):
+    """把 storage 段渲染成一行展示文本；非 dict / 缺 total_gb 时返回 None（绝不丢格式异常出去）。"""
+    if not isinstance(storage, dict):
+        return None
+    total = _num(storage.get("total_gb"))
+    if total is None:
+        return None
+    tail = ""
+    free = _num(storage.get("free_gb"))
+    used = _num(storage.get("usage_percent"))
+    if free is not None and used is not None:
+        tail = f" (已用: {used:.1f}%, 剩余: {free:.1f} GB)"
+    return f"  • 本地总闪存存储:   {total:.1f} GB{tail}"
+
 async def cmd_perf(args):
     print("⚡ 正在通过 CoreDevice RSD 与系统遥测获取真机实时性能大盘...")
     async with CoreDeviceSession() as s:
@@ -107,10 +132,7 @@ async def cmd_perf(args):
 
         ram_total = dev_info.get("physical_memory_gb", 0)
         thermal = dev_info.get("thermal_state", "未知")
-        storage = dev_info.get("storage", {})
-        free_gb = storage.get("free_gb", "未知")
-        total_gb = storage.get("total_gb", "未知")
-        usage_pct = storage.get("usage_percent", "未知")
+        storage_line = _storage_line(dev_info.get("storage", {}))
         uptime_sec = dev_info.get("uptime_seconds", 0)
         uptime_str = f"{uptime_sec // 3600:.0f} 小时 {(uptime_sec % 3600) // 60:.0f} 分钟" if uptime_sec else "未知"
 
@@ -131,8 +153,8 @@ async def cmd_perf(args):
         print(f"  • 发热状态 (温控):  {thermal_desc}")
         if ram_total:
             print(f"  • 统一物理内存:     {ram_total:.2f} GB RAM")
-        if total_gb != "未知":
-            print(f"  • 本地总闪存存储:   {total_gb:.1f} GB (已用: {usage_pct:.1f}%, 剩余: {free_gb:.1f} GB)")
+        if storage_line:
+            print(storage_line)
         print("=" * 58)
 
 async def cmd_syslog(args):

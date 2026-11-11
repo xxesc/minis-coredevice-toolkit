@@ -7,12 +7,10 @@ cdtk-proc: 基于 DVT Instruments (dtservicehub) 的系统级进程特权与内�
 
 import argparse
 import asyncio
-import json
 import sys
 import time
 
 from coredevice_session import CoreDeviceSession
-from pymobiledevice3.dtx import PInt32
 from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
 from pymobiledevice3.services.dvt.instruments.process_control import ProcessControl
 

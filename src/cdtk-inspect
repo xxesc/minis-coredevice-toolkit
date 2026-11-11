@@ -13,19 +13,14 @@ import sys
 import time
 
 from coredevice_session import CoreDeviceSession
-from pymobiledevice3.remote.core_device.app_service import AppServiceService
 from pymobiledevice3.services.webinspector import WebinspectorService
 
 
-async def get_target_app_and_page(wi, page_id=None, app_name_filter=None):
+async def get_target_app_and_page(wi, page_id=None):
     """查找并匹配指定的目标 Web 应用和页面"""
     await wi.get_open_pages()
     
     for app_id, app_obj in wi.connected_application.items():
-        curr_name = getattr(app_obj, "name", "")
-        if app_name_filter and app_name_filter.lower() not in curr_name.lower():
-            continue
-            
         pages_map = wi.application_pages.get(app_id, {})
         if page_id is not None:
             for p in pages_map.values():

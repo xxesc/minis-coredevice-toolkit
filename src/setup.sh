@@ -5,11 +5,30 @@ set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REQ_FILE="$SCRIPT_DIR/requirements.txt"
+LINK_MODE=0
 
 die() {
   echo "❌ $*" >&2
   exit 1
 }
+
+usage() {
+  cat <<'EOF'
+用法: sh setup.sh [--link]
+
+  （无参数）  复制 CLI 到 /usr/local/bin（默认，安装态推荐：CLI 与库一起更新）
+  --link     用符号链接注册 CLI（开发态：改源码立即生效，但库副本不会自动更新）
+  -h, --help 显示本帮助
+EOF
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    --link) LINK_MODE=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; echo "❌ 未知参数: $arg" >&2; exit 2 ;;
+  esac
+done
 
 echo "🚀 开始安装 CoreDevice RSD 工具链 (coredevice-toolkit / cdtk)..."
 
@@ -77,7 +96,12 @@ mkdir -p /usr/local/bin
 for tool in cdtk-install cdtk-ctrl cdtk-profile cdtk-fs cdtk-diag cdtk-crash cdtk-inspect cdtk-springboard cdtk-proc cdtk-doctor cdtk-notify; do
   if [ -f "$SCRIPT_DIR/$tool" ]; then
     chmod +x "$SCRIPT_DIR/$tool"
-    ln -sf "$SCRIPT_DIR/$tool" "/usr/local/bin/$tool"
+    if [ "$LINK_MODE" -eq 1 ]; then
+      ln -sf "$SCRIPT_DIR/$tool" "/usr/local/bin/$tool"
+    else
+      cp -f "$SCRIPT_DIR/$tool" "/usr/local/bin/$tool"
+      chmod +x "/usr/local/bin/$tool"
+    fi
     echo "  • /usr/local/bin/$tool"
   fi
 done

@@ -6,9 +6,7 @@ cdtk-ctrl: 基于 CoreDevice RSD 底层通道的 iOS 原生硬件级自动化控
 
 import argparse
 import asyncio
-import contextlib
 import json
-import os
 import sys
 import time
 

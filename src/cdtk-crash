@@ -101,7 +101,7 @@ async def scan_all_crash_reports(cm: CrashReportsManager) -> list:
         try:
             entries = await cm.ls(folder)
             for e in entries:
-                if e.endswith(".ips") or e.endswith(".synced") or ".ips" in e:
+                if ".ips" in e:
                     p = e if e.startswith("/") else posixpath.join(folder, e)
                     all_files.append(p)
         except Exception:
@@ -125,7 +125,7 @@ async def cmd_list(args):
             kw = args.filter.lower()
             ips_files = [f for f in ips_files if kw in f.lower()]
 
-        limit = args.limit or 20
+        limit = args.limit if args.limit is not None else 15
         shown = ips_files[:limit]
 
         print(f"\n📋 发现 {len(ips_files)} 份系统崩溃日志 (显示最近 {len(shown)} 份):")
@@ -168,7 +168,7 @@ async def cmd_pull(args):
         cm = CrashReportsManager(s.rsd)
         
         # 支持未指定文件时自动抓取最新的崩溃日志
-        if not target or target == "--latest" or target == "latest":
+        if target is None:
             ips = await scan_all_crash_reports(cm)
             if not ips:
                 print("📭 未找到系统崩溃日志。")
@@ -245,7 +245,7 @@ def main():
     p_v.add_argument("filename", help="日志文件名")
 
     p_pull = sub.add_parser("pull", help="导出原始崩溃日志到本地")
-    p_pull.add_argument("filename", nargs="?", default="--latest", help="日志文件名 (省略则导出最新一次)")
+    p_pull.add_argument("filename", nargs="?", default=None, help="日志文件名 (省略则导出最新一次)")
     p_pull.add_argument("output", nargs="?", help="本地保存路径")
 
     p_lat = sub.add_parser("latest", help="一键解析最近一次崩溃")

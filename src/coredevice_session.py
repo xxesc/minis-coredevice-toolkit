@@ -9,7 +9,6 @@ import base64
 import fcntl
 import json
 import os
-import select
 import plistlib
 import shutil
 import struct
@@ -33,11 +32,43 @@ from pymobiledevice3.remote.userspace_tunnel import UserspaceTun, UserspaceDialP
 from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
 from pymobiledevice3.remote.remotexpc import default_handshake_uuid
 
+def _env_float(name, default, lo=None):
+    """宽容解析环境变量：不合法就用默认值并在 stderr 提醒，绝不让 import 崩掉。"""
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        val = float(raw)
+    except ValueError:
+        print("[cdtk] %s=%r 不是数字，按默认 %s 处理" % (name, raw, default), file=sys.stderr)
+        return default
+    if lo is not None and val < lo:
+        return 0.0 if lo == 1.0 else default   # <=0 约定为"不限"
+    return val
+
+def _env_int(name, default, lo=None, hi=None):
+    """宽容解析整型环境变量：不合法或越界就用默认值并在 stderr 提醒，绝不让 import 崩掉。"""
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        val = int(raw.strip(), 10)
+    except ValueError:
+        print("[cdtk] %s=%r 不是整数，按默认 %s 处理" % (name, raw, default), file=sys.stderr)
+        return default
+    if lo is not None and val < lo:
+        print("[cdtk] %s=%r 小于下限 %s，按默认 %s 处理" % (name, raw, lo, default), file=sys.stderr)
+        return default
+    if hi is not None and val > hi:
+        print("[cdtk] %s=%r 大于上限 %s，按默认 %s 处理" % (name, raw, hi, default), file=sys.stderr)
+        return default
+    return val
+
 # 网络容错：支持通过环境变量覆盖目标 Host / Port，默认指向 Surge 本地回环反射。
 HOST = os.environ.get("CDTK_RSD_HOST", "10.7.0.1")
-PORT = int(os.environ.get("CDTK_RSD_PORT", "49152"))
+PORT = _env_int("CDTK_RSD_PORT", 49152, 1, 65535)
 PORT_EXPLICIT = "CDTK_RSD_PORT" in os.environ
-HANDSHAKE_TIMEOUT = float(os.environ.get("CDTK_HANDSHAKE_TIMEOUT", "10"))
+HANDSHAKE_TIMEOUT = _env_float("CDTK_HANDSHAKE_TIMEOUT", 10.0, lo=0.1)
 
 # ── 控制端口动态发现（issue #1 / 缺陷 2）────────────────────────────────
 # 设备端 remoted 的 RSD 监听端口会随 listener 重新通告而漂移（真机实测曾漂到 65389）。
@@ -46,8 +77,8 @@ HANDSHAKE_TIMEOUT = float(os.environ.get("CDTK_HANDSHAKE_TIMEOUT", "10"))
 # 策略：env 显式指定 → 缓存 → 首选端口，都失败再做 49152-65535 端口扫描 + RPPairing 指纹。
 # 只有在「连接级失败」时才扫描；握手超时说明端口活着、设备没醒，扫了也白扫。
 PORT_CACHE_FILE = os.environ.get("CDTK_RSD_PORT_CACHE", "/tmp/.cdtk_rsd_port.json")
-PORT_SCAN_TIMEOUT = float(os.environ.get("CDTK_RSD_SCAN_TIMEOUT", "1.2"))
-PORT_SCAN_CONCURRENCY = int(os.environ.get("CDTK_RSD_SCAN_CONCURRENCY", "128"))
+PORT_SCAN_TIMEOUT = _env_float("CDTK_RSD_SCAN_TIMEOUT", 1.2, lo=0.1)
+PORT_SCAN_CONCURRENCY = _env_int("CDTK_RSD_SCAN_CONCURRENCY", 128, 1, 1024)
 def _parse_scan_range():
     raw = os.environ.get("CDTK_RSD_SCAN_RANGE", "49152-65535")
     try:
@@ -165,20 +196,6 @@ async def rsd_fingerprint(host, port, timeout=1.5):
                 w.close()
             except Exception:
                 pass
-
-def _env_float(name, default, lo=None):
-    """宽容解析环境变量：不合法就用默认值并在 stderr 提醒，绝不让 import 崩掉。"""
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return default
-    try:
-        val = float(raw)
-    except ValueError:
-        print("[cdtk] %s=%r 不是数字，按默认 %s 处理" % (name, raw, default), file=sys.stderr)
-        return default
-    if lo is not None and val < lo:
-        return 0.0 if lo == 1.0 else default   # <=0 约定为"不限"
-    return val
 
 SCAN_BUDGET = _env_float("CDTK_SCAN_BUDGET", 60.0, lo=1.0)
 

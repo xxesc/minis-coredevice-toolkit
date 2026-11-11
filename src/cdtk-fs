@@ -8,7 +8,6 @@ import argparse
 import asyncio
 import os
 import sys
-from pathlib import Path
 
 from coredevice_session import CoreDeviceSession
 from pymobiledevice3.services.afc import AfcService
