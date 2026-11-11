@@ -63,10 +63,10 @@ async def cmd_apply(args):
             confirm = input("确认执行覆盖生效吗？输入 [y/N]: ").strip().lower()
             if confirm not in ("y", "yes"):
                 print("操作已取消。")
-                return
+                return 2
         except (KeyboardInterrupt, EOFError):
             print("\n操作已取消。")
-            return
+            return 2
         
     print(f"⚡ 正在加载布局文件: {src} ...")
     if src.endswith(".json"):

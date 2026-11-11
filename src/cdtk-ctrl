@@ -6,6 +6,7 @@ cdtk-ctrl: 基于 CoreDevice RSD 底层通道的 iOS 原生硬件级自动化控
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -42,7 +43,7 @@ async def cmd_launch(args):
         try:
             subprocess.run([
                 "apple-notification", "schedule",
-                "--title", f"🤖 妹妹正在操作 {friendly_name}",
+                "--title", f"🤖 正在操作 {friendly_name}",
                 "--body", f"📌 当前步骤: {op_desc}（请先勿触碰屏幕，完成后会自动弹窗提醒切回）",
                 "--after", "0"
             ], capture_output=True, timeout=3)
@@ -138,16 +139,42 @@ async def resolve_points(rsd, args, points):
     except (ValueError, KeyError, TypeError) as e:
         sys.exit(f"❌ {e}")
 
+async def _release_touch(hid, x, y, tsid):
+    """释放触点：取消态下也要真正发完，返回是否成功。
+
+    只 suppress(Exception)，不吞 KeyboardInterrupt / SystemExit；
+    被取消时继续等 shield 包住的任务完成，避免"以为发了其实没发"。
+    """
+    task = asyncio.ensure_future(
+        hid.send_touchscreen(TOUCHSCREEN_STATE_RELEASE, x, y, service_id=tsid)
+    )
+    while True:
+        try:
+            await asyncio.shield(task)
+            return True
+        except asyncio.CancelledError:
+            if task.done():
+                return not task.cancelled() and task.exception() is None
+            continue          # 释放没发完之前不放弃
+        except Exception:
+            return False
+
 async def cmd_tap(args):
     print(f"⚡ 正在向物理屏幕注入真实硬件触控点击: ({args.x}, {args.y})...")
     async with CoreDeviceSession() as s:
         [(x, y)] = await resolve_points(s.rsd, args, [(args.x, args.y)])
         async with touch_session(s.rsd) as hid:
             tsid = args.service_id or DIGITIZER_SURFACE_MAIN_TOUCHSCREEN
-            await hid.send_touchscreen(TOUCHSCREEN_STATE_CONTACT, x, y, service_id=tsid)
-            await asyncio.sleep(0.06)
-            await hid.send_touchscreen(TOUCHSCREEN_STATE_RELEASE, x, y, service_id=tsid)
+            try:
+                await hid.send_touchscreen(TOUCHSCREEN_STATE_CONTACT, x, y, service_id=tsid)
+                await asyncio.sleep(0.06)
+            finally:
+                released = await _release_touch(hid, x, y, tsid)
+            if not released:
+                print("⚠️  触点释放失败，设备可能停留在按下状态", file=sys.stderr)
+                return 1
             print(f"✅ 触控点击已注入完成！坐标: ({args.x}, {args.y})")
+            return 0
 
 async def cmd_swipe(args):
     print(f"⚡ 正在向物理屏幕注入真实硬件滑动: ({args.x1}, {args.y1}) -> ({args.x2}, {args.y2})...")
@@ -168,12 +195,12 @@ async def cmd_swipe(args):
                     await asyncio.sleep(interval)
                 await hid.send_touchscreen(TOUCHSCREEN_STATE_CONTACT, x2, y2, service_id=tsid)
             finally:
-                # 设备侧不能在"按住"状态停住：中断/异常也必须发 RELEASE
-                try:
-                    await hid.send_touchscreen(TOUCHSCREEN_STATE_RELEASE, x2, y2, service_id=tsid)
-                except Exception:
-                    pass
+                released = await _release_touch(hid, x2, y2, tsid)
+            if not released:
+                print("⚠️  触点释放失败，设备可能停留在按下状态", file=sys.stderr)
+                return 1
             print(f"✅ 硬件滑动已执行完成！耗时: {duration:.2f}s, 步数: {steps}")
+            return 0
 
 def main():
     parser = argparse.ArgumentParser(description="cdtk-ctrl: iOS 原生硬件级自动化控制中枢")
@@ -181,7 +208,7 @@ def main():
 
     # launch
     p_launch = subparsers.add_parser("launch", help="通过 CoreDevice 原生拉起任意 App")
-    p_launch.add_argument("bundle_id", help="应用 Bundle Identifier (如 com.meituan.imeituan)")
+    p_launch.add_argument("bundle_id", help="应用 Bundle Identifier (如 com.example.demo)")
     p_launch.add_argument("--no-kill", action="store_true", help="不强制杀死已有实例")
     p_launch.add_argument("-r", "--reason", "--op", dest="reason", help="本次操作的具体目的与说明（用于向系统弹出提示横幅）")
     p_launch.add_argument("--no-notify", action="store_true", help="不发送系统横幅通知")

@@ -1,2 +1,13 @@
 __pycache__/
 *.pyc
+
+# build artifacts & secrets
+cdtk.tgz
+*.tgz
+*.p12
+*.mobileprovision
+*.pem
+*.key
+pairing*.plist
+rp_pairing_file.plist
+.DS_Store

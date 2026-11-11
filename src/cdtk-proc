@@ -101,7 +101,7 @@ def main():
     sub = parser.add_subparsers(dest="subcommand", required=True)
 
     p_mem = sub.add_parser("mem", help="一键豁免目标应用的 Jetsam 内存上限，彻底防杀后台")
-    p_mem.add_argument("target", help="应用 Bundle ID（如 com.openminis.app）或目标 PID")
+    p_mem.add_argument("target", help="应用 Bundle ID（如 com.example.app）或目标 PID")
     p_mem.set_defaults(func=cmd_mem)
 
     p_sig = sub.add_parser("signal", help="向目标进程注入底层系统信号（如 stop / cont / kill）")

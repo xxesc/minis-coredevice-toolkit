@@ -166,18 +166,45 @@ async def rsd_fingerprint(host, port, timeout=1.5):
             except Exception:
                 pass
 
+def _env_float(name, default, lo=None):
+    """宽容解析环境变量：不合法就用默认值并在 stderr 提醒，绝不让 import 崩掉。"""
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        val = float(raw)
+    except ValueError:
+        print("[cdtk] %s=%r 不是数字，按默认 %s 处理" % (name, raw, default), file=sys.stderr)
+        return default
+    if lo is not None and val < lo:
+        return 0.0 if lo == 1.0 else default   # <=0 约定为"不限"
+    return val
+
+SCAN_BUDGET = _env_float("CDTK_SCAN_BUDGET", 60.0, lo=1.0)
+
 async def scan_for_rsd_port(host=None, skip=()):
     """分块扫描 49152-65535，先批量 TCP 探活、再对候选做 RPPairing 指纹。
-    分块是为了不让 iSH 一次性创建上万协程；找到即返回。"""
+    分块是为了不让 iSH 一次性创建上万协程；找到即返回。
+    总耗时受 CDTK_SCAN_BUDGET（默认 60 秒）约束，超时返回 None，避免静默卡几分钟。"""
     host = host or HOST
     lo, hi = PORT_SCAN_RANGE
     skip = set(skip)
+    deadline = asyncio.get_running_loop().time() + SCAN_BUDGET
+    loop = asyncio.get_running_loop()
     for start in range(lo, hi, PORT_SCAN_CHUNK):
+        if SCAN_BUDGET and loop.time() > deadline:
+            print("[cdtk] 端口扫描超过 %ds 预算，停止（可用 CDTK_SCAN_BUDGET 调整或 CDTK_RSD_PORT 指定）"
+                  % int(SCAN_BUDGET), file=sys.stderr)
+            return None
+        if start > lo:
+            print("[cdtk] 已扫描到端口 %d…" % start, file=sys.stderr)
         found = []
         sem = asyncio.Semaphore(PORT_SCAN_CONCURRENCY)
 
         async def _probe(p):
             async with sem:
+                if SCAN_BUDGET and loop.time() > deadline:
+                    return
                 if await _tcp_probe(host, p, PORT_SCAN_TIMEOUT):
                     found.append(p)
 
@@ -282,10 +309,21 @@ def load_pairing(pairing_path=None, isolate=True):
             except Exception: pass
             
             isolated_target = secure_dir / Path(target).name
-            with open(target, "rb") as src, os.fdopen(
-                os.open(isolated_target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "wb"
-            ) as dst:
-                shutil.copyfileobj(src, dst)
+            if os.path.abspath(target) != str(isolated_target):
+                tmp_path = str(isolated_target) + ".tmp.%d" % os.getpid()
+                try:
+                    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+                except OSError as e:
+                    if e.errno == getattr(__import__("errno"), "ELOOP"):
+                        raise SystemExit("❌ 隔离目录里已存在同名符号链接，请先删除: %s" % isolated_target)
+                    raise
+                try:
+                    os.fchmod(fd, 0o600)
+                    with open(target, "rb") as src, os.fdopen(os.dup(fd), "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                finally:
+                    os.close(fd)
+                os.replace(tmp_path, isolated_target)
             target = str(isolated_target)
 
     with open(target, "rb") as f:

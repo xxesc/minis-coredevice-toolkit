@@ -71,11 +71,11 @@ class Doctor:
         print(f"  {PASS} {lbl_py}: {sys.executable} ({py_ver})")
 
         # 可选依赖：仅 cdtk-install 的本地重签名需要
-        zsign_path = shutil.which("zsign")
+        zsign_path = shutil.which("zsign") or os.path.exists("/usr/local/bin/rcodesign") or shutil.which("rcodesign")
         if not zsign_path:
-            msg = "zsign not found (optional; only needed for cdtk-install local signing)" if not is_zh else "未检测到 zsign（可选，仅 cdtk-install 本地重签名需要）"
+            msg = "zsign/rcodesign not found (optional; only needed for cdtk-install local signing)" if not is_zh else "未检测到 zsign 或 rcodesign（可选，仅 cdtk-install 本地重签名需要）"
             print(f"  {WARN} {msg}")
-            self.warnings.append(("zsign not installed" if not is_zh else "未安装 zsign", "apk add zsign (若需本地签名功能时可选安装)"))
+            self.warnings.append(("zsign not installed" if not is_zh else "未安装签名器", "apk add zsign，或安装 rcodesign 静态包（cdtk-install 会自动选择可用后端）"))
 
     def check_python_deps(self):
         sec = "2. Checking Python Protocol Stack Modules:" if not is_zh else "2. 检查 Python 核心协议栈模块:"
@@ -173,8 +173,9 @@ class Doctor:
             import coredevice_session as cds
             return cds
         except ImportError:
-            for p in ("/var/minis/skills/coredevice-toolkit/scripts",):
-                if p not in sys.path:
+            for p in (os.environ.get("CDTK_SCRIPT_DIR"),
+                      os.path.dirname(os.path.abspath(__file__))):
+                if p and p not in sys.path:
                     sys.path.insert(0, p)
             import coredevice_session as cds
             return cds
@@ -281,8 +282,9 @@ class Doctor:
             psk, c_key, s_key = await asyncio.wait_for(
                 do_pair_verify(reader, writer, pairing_record), timeout=10.0
             )
-            writer.close()
-            await writer.wait_closed()
+            # 保留连接给第 6 步：createListener 必须和 pair-verify 在同一条会话里完成，
+            # 另开连接会被设备当成另一条 peer 会话。
+            self._tunnel_conn = (reader, writer, psk, c_key, s_key)
             h_ok = "Apple Pair-Verify protocol handshake successful (PSK negotiated)" if not is_zh else "苹果底层 Pair-Verify 协议握手成功 (PSK 协商正常)"
             w_ok = ("Pair-Verify succeeded; Developer Mode state is NOT verified here"
                     if not is_zh else "Pair-Verify 已通过；开发者模式状态未在此校验")
@@ -290,6 +292,13 @@ class Doctor:
             print(f"  ℹ️  {w_ok}")
         except Exception as e:
             err_str = str(e)
+            if "writer" in locals():
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+            self._tunnel_conn = None
             fail_h = f"Apple protocol handshake failed: {err_str}" if not is_zh else f"苹果底层握手失败: {err_str}"
             print(f"  {FAIL} {fail_h}")
             if "Connection reset" in err_str or "Broken pipe" in err_str:
@@ -305,6 +314,75 @@ class Doctor:
                     f"Handshake error: {err_str}" if not is_zh else f"协议握手异常: {err_str}",
                     "Ensure the pairing record matches this device and screen remains unlocked." if not is_zh else "请确认配对记录是否来自本台 iPhone，并确保屏幕保持常亮解锁。"
                 ))
+
+    async def check_tunnel(self, pairing_record):
+        """第 6 步：真实建隧道。这是唯一能判定「通道能不能用」的检查。
+
+        前 5 步全绿也可能一点用都没有：pair-verify 只验 host 签名，设备端不会检查
+        这条配对记录是否还注册在本机；真正建隧道时设备要拿它派生会话密钥，
+        找不到对应 host 记录就直接 FIN —— 表现就是「握手全过、加密请求 0 字节」。
+        """
+        sec = "6. Establishing Real Tunnel (createListener):" if not is_zh else "6. 真实隧道建立探测 (createListener):"
+        print(f"\n{BOLD}{sec}{RESET}")
+        conn = getattr(self, "_tunnel_conn", None)
+        if not conn:
+            print(f"  {WARN} " + ("Skipped: handshake did not complete"
+                                  if not is_zh else "已跳过：前置握手未完成"))
+            return
+        reader, writer, psk, c_key, s_key = conn
+        cds = self._load_cds()
+        try:
+            port = await asyncio.wait_for(
+                cds.create_listener(reader, writer, psk, c_key, s_key), timeout=15.0
+            )
+            msg = (f"Tunnel listener created on device (port {port}) — encrypted channel verified"
+                   if not is_zh else f"隧道监听器已在设备端创建（端口 {port}），加密通道实测可用")
+            print(f"  {PASS} {msg}")
+        except Exception as e:
+            err_str = str(e) or type(e).__name__
+            zero_bytes = isinstance(e, asyncio.IncompleteReadError) or "0 bytes read" in err_str
+            if zero_bytes:
+                print(f"  {FAIL} " + ("Pair-Verify passed, but the device tears down every encrypted request (0 bytes)"
+                                      if not is_zh else "Pair-Verify 已通过，但设备对一切加密请求直接断连（0 字节）"))
+                self.errors.append((
+                    "Pairing record is stale: the device no longer has this host registered, "
+                    "so it refuses to derive tunnel keys from it" if not is_zh else
+                    "配对记录已失配：设备端已经没有这条 host 注册，拒绝用它派生隧道密钥",
+                    ("This layer cannot be caught by Pair-Verify — it only checks the host signature.\n"
+                     "      1) Re-export the pairing file from StikPair;\n"
+                     "      2) cp '<new>.plist' /root/.cdtk/pairing/rp_pairing_file.plist && chmod 600 /root/.cdtk/pairing/rp_pairing_file.plist\n"
+                     "      3) Confirm the identity really changed:\n"
+                     "         python3 -c \"import plistlib;print(plistlib.load(open('/root/.cdtk/pairing/rp_pairing_file.plist','rb'))['identifier'])\"")
+                    if not is_zh else
+                    ("这一层 Pair-Verify 抓不到 —— 它只验 host 签名，不查设备端有没有这条 host 记录。\n"
+                     "      ① 用 StikPair 重新导出配对文件；\n"
+                     "      ② cp '<新导出>.plist' /root/.cdtk/pairing/rp_pairing_file.plist && chmod 600 /root/.cdtk/pairing/rp_pairing_file.plist\n"
+                     "      ③ 确认身份确实换成了新的一条：\n"
+                     "         python3 -c \"import plistlib;print(plistlib.load(open('/root/.cdtk/pairing/rp_pairing_file.plist','rb'))['identifier'])\"")
+                ))
+            elif isinstance(e, asyncio.TimeoutError):
+                print(f"  {FAIL} " + ("Device accepted the tunnel request but never replied (timeout)"
+                                      if not is_zh else "设备收下了建隧道请求但一直没有回包（超时）"))
+                self.errors.append((
+                    "Tunnel creation timed out" if not is_zh else "隧道创建超时",
+                    ("Keep the screen unlocked; if it persists, re-plug the USB cable to refresh the paired-host event."
+                     if not is_zh else "请保持屏幕解锁；若持续失败，用数据线重插一次刷新 paired-host 事件。")
+                ))
+            else:
+                print(f"  {FAIL} " + (f"Tunnel creation failed: {err_str}"
+                                      if not is_zh else f"隧道创建失败: {err_str}"))
+                self.errors.append((
+                    f"createListener error: {err_str}" if not is_zh else f"createListener 异常: {err_str}",
+                    ("Re-export the pairing file if the record may have changed; otherwise re-plug the USB cable."
+                     if not is_zh else "若配对记录可能变过，重新导出并装入；否则重插一次数据线。")
+                ))
+        finally:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+            self._tunnel_conn = None
 
     def print_summary(self):
         print("\n" + "=" * 66)
@@ -399,6 +477,7 @@ async def main():
     net_ok = await doc.check_loopback_network()
     if net_ok:
         await doc.check_device_handshake(rec)
+        await doc.check_tunnel(rec)
     return doc.print_summary()
 
 if __name__ == "__main__":

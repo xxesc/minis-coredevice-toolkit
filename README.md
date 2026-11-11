@@ -67,8 +67,9 @@ Then run the doctor:
 cdtk-doctor          # --zh for Chinese output
 ```
 
-It checks the runtimes, the Python modules, the pairing file and its permissions, the loopback port, and performs one
-Pair-Verify handshake. Failures come with the command to fix them. The device identifier is masked by default;
+It runs six checks: runtimes, Python modules, the pairing file and its permissions, the loopback port, the Pair-Verify
+handshake, and finally a real `createListener` tunnel. Only the sixth proves the tunnel works — Pair-Verify alone just
+validates the host signature. Failures come with the command to fix them. The device identifier is masked by default;
 `--show-udid` prints it in full.
 
 ---
@@ -90,6 +91,10 @@ Pair-Verify handshake. Failures come with the command to fix them. The device id
 | `cdtk-proc`        | Jetsam immunity, signals     |
 
 `-h` works on almost every command; `cdtk-doctor -h` starts the audit instead of printing help, and `cdtk-notify` shows usage when run without arguments.
+
+`cdtk-install` signs with `zsign` when it is available. If not, it falls back to `rcodesign`: unpack the IPA, replace
+`embedded.mobileprovision`, sign the bundle with the profile's entitlements, and repack. Passwords may be passed as
+`密码：xxx` — the prefix is stripped automatically.
 
 ---
 
@@ -154,15 +159,13 @@ advertised. This toolchain sends the pairing record's `identifier` in both pair-
 
 **Q4: `cdtk-ctrl launch` on the host app's own bundle id kills it**
 
-The host app is the one running this toolchain. Launching it that way makes the process receive `SIGKILL` the moment it
-returns to the foreground: the UI reports an interruption, the log shows a PID change with no shutdown sequence, and
-there is no matching `.ips` (only the app's own `FOREGROUND CRASH (SIGKILL — app was in use)`).
+The host app is the one running this toolchain. `cdtk-ctrl launch` defaults to `kill_existing=True`
+(`launch_application(bundle_id, kill_existing=not args.no_kill)`), so it terminates the target's existing instance before
+starting a new one. Launching the host therefore kills it: the UI reports an interruption, the log shows a PID change
+with no shutdown sequence, and there is no matching `.ips`.
 
-Observed on one device: switching back with `cdtk-ctrl launch` kills it; tapping the icon, or coming back through a normal
-launch channel such as iCTRL / Swipt, does not. `cdtk-ctrl launch` goes through `com.apple.coredevice.appservice`, and
-calling it on the host itself triggers the termination; launching other apps is unaffected.
-
-**Rule**: switch away with it freely; switch back through a normal launch path.
+**Rule**: launch other apps normally. Switch back to the host with
+`cdtk-ctrl launch <host bundle id> --no-kill` (activate only), or tap its icon. Add `--no-notify` to suppress the banner.
 
 **Q5: Does the tunnel keep resources after a command finishes**
 
@@ -210,7 +213,7 @@ There is no `SKILL.md` in this repo (each host has its own skill format), but th
    ```
 
 Three things an assistant cannot do alone and a human has to provide: Developer Mode, a working Surge loopback, and a
-pairing record (StikPair or wloc). Without them, steps 3-5 of `cdtk-doctor` will not pass.
+pairing record (StikPair or wloc). Without them, steps 3–6 of `cdtk-doctor` will not pass.
 
 ## Testing
 

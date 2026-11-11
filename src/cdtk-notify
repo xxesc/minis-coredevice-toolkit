@@ -21,7 +21,7 @@ command -v apple-notification >/dev/null 2>&1 || {
 case "$ACTION" in
     start)
         apple-notification schedule \
-            --title "🤖 妹妹正在操作 $APP_NAME" \
+            --title "🤖 正在操作 $APP_NAME" \
             --body "📌 当前步骤: ${MSG:-正在调试环境}（请先勿触碰屏幕）" \
             --after 0 >/dev/null 2>&1
         ;;

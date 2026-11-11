@@ -64,8 +64,8 @@ sh setup.sh
 cdtk-doctor          # 中文输出加 --zh
 ```
 
-它检查运行时、Python 模块、配对文件与权限、回环端口，并做一次 Pair-Verify 握手。有问题会给出修复命令。
-默认会把设备标识符打码，`--show-udid` 才显示完整值。
+它跑六步：运行时、Python 模块、配对文件与权限、回环端口、Pair-Verify 握手，最后**真建一次隧道**（`createListener`）。
+只有第 6 步通过才说明通道可用——Pair-Verify 只验 host 签名。有问题会给出修复命令。默认把设备标识符打码，`--show-udid` 才显示完整值。
 
 ---
 
@@ -86,6 +86,9 @@ cdtk-doctor          # 中文输出加 --zh
 | `cdtk-proc`        | Jetsam 豁免、信号        |
 
 `-h` 对绝大多数命令有效；`cdtk-doctor -h` 不会打印帮助，而是直接开始体检，`cdtk-notify` 用无参数运行看用法。
+
+`cdtk-install` 优先用 `zsign` 签名；找不到时自动回退 `rcodesign`：解包 IPA → 换 `embedded.mobileprovision` →
+按描述文件 entitlements 签 bundle → 重打包。密码可以写成 `密码：xxx`，会自动剥掉前缀。
 
 ---
 
@@ -146,14 +149,12 @@ cdtk-profile list
 
 **Q4：用 `cdtk-ctrl launch` 把宿主 App 自己拉回前台，进程被杀**
 
-宿主 App 指正在跑本工具链的那个 App。用它自己的 bundle id 执行 `cdtk-ctrl launch` 时，进程在回到前台的瞬间收到
-`SIGKILL`：界面报中断，日志里 PID 跳变、没有退出流程，系统崩溃目录里没有对应 `.ips`（只有 App 自己写的
-`FOREGROUND CRASH (SIGKILL — app was in use)`）。
+宿主 App 指正在跑本工具链的那个 App。`cdtk-ctrl launch` 默认 `kill_existing=True`
+（源码 `launch_application(bundle_id, kill_existing=not args.no_kill)`），会**先杀掉目标 App 的现有实例再拉起**。
+拉起宿主自己 = 自杀：界面报中断，日志里 PID 跳变、没有退出流程，系统崩溃目录里没有对应 `.ips`。
 
-单机观察到的情况：换 `cdtk-ctrl launch` 切回会死；手动点图标、或用 iCTRL / Swipt 这类正常启动通道切回则不会。
-`cdtk-ctrl launch` 走的是 `com.apple.coredevice.appservice`，对宿主自己调用会触发系统终止；拉起别的 App 不受影响。
-
-**规则**：切走随便用，切回宿主走普通启动路径。
+**规则**：拉起别的 App 随便用；切回宿主用 `cdtk-ctrl launch <宿主 bundle id> --no-kill`（只激活不杀），
+或人工点图标。不想弹「请先勿触碰屏幕」横幅加 `--no-notify`。
 
 **Q5：命令跑完后隧道还占资源吗**
 
@@ -199,7 +200,7 @@ cdtk-profile list
    ```
 
 有三件事 AI 自己办不到，需要人配合：开开发者模式、配好 Surge 回环、导出一份配对文件（StikPair 或 wloc）。
-这三样不给，`cdtk-doctor` 第 3–5 步不会通过。
+这三样不给，`cdtk-doctor` 第 3–6 步不会通过。
 
 ## 维护
 
