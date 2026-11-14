@@ -20,7 +20,7 @@ becomes one command instead of "plug in a computer" or "jailbreak".
 - Not a jailbreak: no root, no system partitions. Only the services RSD exposes.
 - Needs Surge ≥ 5.23 to reflect `10.7.0.1` back to the phone.
 - Needs a RemotePairing record — see the [pairing guide](references/PAIRING_GUIDE.md).
-- The first run needs one USB connection (from a computer or any USB host) so `remoted` advertises the listener; the pairing record itself can be obtained on-device (see the pairing guide). Recovery after the listener closes is Q2.
+- The first run needs one USB connection (from a computer or any USB host) so `remoted` advertises the listener; the pairing record itself can be obtained on-device (see the pairing guide). Recovery after the listener closes is Q3.
 - Tested on iPhone 14 (iPhone14,7) / iOS 27.3, host Minis 1.16. Other versions are not verified by this repo.
   There is no CI and no reproducible test script; every "measured" note below is a single observation.
 
@@ -46,7 +46,7 @@ cdtk-* ── coredevice_session ──► 10.7.0.1:49xxx ──► remoted ─�
 2. Host Minis (iSH / Alpine Linux, aarch64);
 3. Surge ≥ 5.23 configured as in the [loopback guide](references/SURGE_LOOPBACK.md);
 4. A pairing record at `/root/.cdtk/pairing/` (0600) — see the [pairing guide](references/PAIRING_GUIDE.md);
-5. A computer (only for the USB replug in Q2).
+5. A computer (only for the USB replug in Q3).
 
 ---
 
@@ -138,12 +138,37 @@ Two shapes, tell them apart by the symptom:
 `coredevice_session` probes for the `RPPairing` magic to tell a live listener from a silent one, and tries
 `CDTK_RSD_PORT` → `/tmp/.cdtk_rsd_port.json` → 49152 → a scan of 49152–65535.
 
-**Q2: The loopback is fine (RPPairing answers) but there is still no listener**
+**Q2: Two cdtk commands at the same time — one of them "drops mid-way" or reads 0 bytes**
 
-`remoted` closed it (dual-identity re-attach / lock-screen suspend). Unlocking, rebooting or reconnecting the proxy does
-not restore it; replugging USB once does.
+`remoted` has a rule with no exceptions (iOS 27.x behaviour, documented in `pymobiledevice3`'s
+`remote/remotexpc.py`): **replacement by source address** — an incoming connection whose source IP matches an existing
+peer cancels that peer's connection before any handshake is read. Over a single-device loopback reflect every process
+shares that address, so only one RSD session can be live at a time:
 
-**Q3: Handshake identity**
+- the newcomer evicts the earlier one → the earlier one reports `ConnectionRefused`, drops mid-way, or `0 bytes read`;
+- port scanning (thousands of connections) replaces peers over and over and will almost certainly kill another session.
+
+**A cross-process lock is built in**: `CoreDeviceSession` holds `/tmp/.cdtk_session.lock` (`flock`) for the whole tunnel,
+so the later command prints "another cdtk session is using the device, queueing…" and runs serially. `cdtk-doctor`
+steps 4–6 (scan + real handshake + tunnel) hold the same lock. The queue wait defaults to 120 s and then fails with
+`another cdtk session has held the device for more than 120s`.
+
+| Variable            | Effect                                          |
+| ------------------- | ----------------------------------------------- |
+| `CDTK_LOCK_TIMEOUT` | Queue wait in seconds, default 120, `0` = wait forever |
+| `CDTK_LOCK_FILE`    | Lock path, default `/tmp/.cdtk_session.lock`    |
+| `CDTK_NO_LOCK=1`    | Disable the lock (only when you serialise yourself) |
+
+Real parallelism needs a **different loopback source address per session** (one reflect rule each); process isolation
+alone cannot provide it.
+
+**Q3: The loopback is fine (RPPairing answers) but there is still no listener**
+
+`remoted` closed it (dual-identity re-attach / lock-screen suspend / an evicted concurrent session). Unlocking, rebooting
+or reconnecting the proxy does not restore it; replugging USB once does. First rule out Q2: `pgrep -f cdtk-` for leftover
+processes — `cdtk-doctor` sweeps session dirs older than a day whose pid is gone.
+
+**Q4: Handshake identity**
 
 `remoted` remembers each peer's handshake UUID; a different UUID means re-attach, which closes every listener that peer
 advertised. This toolchain sends the pairing record's `identifier` in both pair-verify and the RSD handshake;
@@ -157,7 +182,7 @@ advertised. This toolchain sends the pairing record's `identifier` in both pair-
 | `CDTK_HOST_UUID`      | Override handshake identity |
 | `CDTK_DEBUG=1`        | Debug output                |
 
-**Q4: `cdtk-ctrl launch` on the host app's own bundle id kills it**
+**Q5: `cdtk-ctrl launch` on the host app's own bundle id kills it**
 
 The host app is the one running this toolchain. `cdtk-ctrl launch` defaults to `kill_existing=True`
 (`launch_application(bundle_id, kill_existing=not args.no_kill)`), so it terminates the target's existing instance before
@@ -167,7 +192,7 @@ with no shutdown sequence, and there is no matching `.ips`.
 **Rule**: launch other apps normally. Switch back to the host with
 `cdtk-ctrl launch <host bundle id> --no-kill` (activate only), or tap its icon. Add `--no-notify` to suppress the banner.
 
-**Q5: Does the tunnel keep resources after a command finishes**
+**Q6: Does the tunnel keep resources after a command finishes**
 
 No. Each command is its own process; the RSD session and the Node child are released on exit (single observation: no
 leftover process and no listening port one second after exit). A clean exit leaves nothing behind; a session interrupted by `timeout` or SIGKILL leaves a directory containing `relay.sock`,

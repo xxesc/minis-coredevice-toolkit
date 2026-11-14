@@ -90,8 +90,85 @@ def _parse_scan_range():
 PORT_SCAN_RANGE = _parse_scan_range()
 PORT_SCAN_CHUNK = 512
 
+# ── 跨进程会话互斥（一个仍在跑的隧道，绝不能被第二条命令顶掉）─────────────
+# iOS 27.x 的 remoted 有一条不通融的规则（注释在 pymobiledevice3 remote/remotexpc.py）：
+# **按源地址替换** —— 新连接只要源 IP 与已有 peer 相同，就先顶掉那条 peer 的连接，
+# 连握手都还没读。本机回环反射下，所有进程的源地址都是同一个 10.7.0.x，
+# 于是「两条 cdtk 命令同时跑」= 后一条把前一条的隧道踩死；踩死的一方报
+# 「连上了但 0 字节回包」，被踩的一方报 ConnectionRefused / 中途断连。
+# 端口扫描同理：扫描会向成千个端口建连，等于对 remoted 发起连番源地址替换。
+# 所以会话与扫描一律先拿这把跨进程锁，串行进出。
+LOCK_FILE = os.environ.get("CDTK_LOCK_FILE", "/tmp/.cdtk_session.lock")
+LOCK_TIMEOUT = _env_float("CDTK_LOCK_TIMEOUT", 120.0, lo=0.0)   # <=0 约定为不限时
+
 def _port_scan_enabled():
     return os.environ.get("CDTK_RSD_SCAN", "1") not in ("0", "false", "off")
+
+class SessionBusyError(RuntimeError):
+    """排队超时：另一条 cdtk 命令长期占着设备会话。"""
+
+class SessionLock:
+    """跨进程会话互斥（flock）。只清业务口径：同一台设备同一时刻一条 RSD 会话。
+
+    用法：
+        async with session_lock():
+            async with CoreDeviceSession() as s:
+                ...
+    CoreDeviceSession 自己已经默认持锁，直接用它即可；只有绕开它自己裸连
+    （如 cdtk-doctor 的 pair-verify + createListener）时才需要手动包一层。
+    """
+
+    def __init__(self, timeout=None, path=None):
+        self.path = path or LOCK_FILE
+        self.timeout = LOCK_TIMEOUT if timeout is None else timeout
+        self._fd = None
+
+    async def __aenter__(self):
+        self._fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+        loop = asyncio.get_running_loop()
+        deadline = None if not self.timeout else loop.time() + self.timeout
+        announced = False
+        while True:
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if deadline is not None and loop.time() > deadline:
+                    wait = "%.0fs" % self.timeout
+                    os.close(self._fd)
+                    self._fd = None
+                    raise SessionBusyError(
+                        "另一条 cdtk 会话占用设备超过 %s（CDTK_LOCK_TIMEOUT 可调，0=不限时）。\n"
+                        "remoted 按源地址替换连接，两条命令同时跑会互相踩掉隧道；\n"
+                        "请等前一条结束，或先 cdtk-doctor --no-sweep 查看是否有残留会话。"
+                        % wait)
+                if not announced:
+                    print("[cdtk] 另一条 cdtk 会话正在使用设备，排队等待…", file=sys.stderr)
+                    announced = True
+                await asyncio.sleep(0.2)
+        try:
+            os.ftruncate(self._fd, 0)
+            os.write(self._fd, b"%d\n" % os.getpid())
+        except Exception:
+            pass
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self._fd is None:
+            return
+        try:
+            fcntl.flock(self._fd, fcntl.LOCK_UN)
+        except Exception:
+            pass
+        try:
+            os.close(self._fd)
+        except Exception:
+            pass
+        self._fd = None
+
+def session_lock(timeout=None, path=None):
+    """返回 SessionLock 上下文（给裸连路径用；CoreDeviceSession 内部已自动持锁）。"""
+    return SessionLock(timeout=timeout, path=path)
 
 def _read_port_cache(host):
     try:
@@ -490,6 +567,7 @@ class CoreDeviceSession:
         self.read_task = None
         self.tun_read_task = None
         self.writer = None
+        self._lock = None
 
     def _close_ctrl(self):
         w = getattr(self, "writer", None)
@@ -498,6 +576,18 @@ class CoreDeviceSession:
                 w.close()
             except Exception:
                 pass
+
+    async def _release_lock(self):
+        if self._lock is not None:
+            try:
+                await self._lock.__aexit__(None, None, None)
+            except Exception:
+                pass
+            self._lock = None
+
+    async def release_lock(self):
+        """提前释放会话锁（长任务结束后想让别的命令插进来时用）。"""
+        await self._release_lock()
 
     async def _pair_verify_once(self, record, ctl_port):
         """在指定控制端口完成 connect + pair-verify + createListener，返回隧道监听端口。"""
@@ -516,6 +606,18 @@ class CoreDeviceSession:
         return psk, c_key, s_key, listener_port
 
     async def __aenter__(self):
+        # 先拿跨进程锁：remoted 会按源地址替换连接，两条命令同时跑必然互踢。
+        if os.environ.get("CDTK_NO_LOCK") != "1":
+            self._lock = SessionLock()
+            await self._lock.__aenter__()
+        try:
+            return await self._aenter_tunnel()
+        except BaseException:
+            # 任何阶段失败都不能把锁带走（否则后续命令全部排队到超时）
+            await self._release_lock()
+            raise
+
+    async def _aenter_tunnel(self):
         record = load_pairing(self.pairing_file)
         queue = control_port_candidates()
         tried, scan_done, last_err = [], False, None
@@ -558,6 +660,7 @@ class CoreDeviceSession:
                 "     长时间没有 paired-host 事件）。唯一可靠恢复是用数据线重插 USB\n"
                 "     触发一次 paired-host 事件；重启手机无效。\n"
             ) % (", ".join(str(p) for p in tried) or str(PORT))
+            await self._release_lock()
             if isinstance(last_err, asyncio.TimeoutError):
                 raise TimeoutError(msg) from last_err
             raise ConnectionError(msg) from last_err
@@ -707,6 +810,9 @@ class CoreDeviceSession:
                 await self.writer.wait_closed()
             except Exception:
                 pass
+
+        # 锁放在最后释放：隧道真正关干净之前不让下一条命令进来（源地址替换会踩到残留连接）
+        await self._release_lock()
 
     async def _wait_node_ready(self, timeout=10.0):
         """

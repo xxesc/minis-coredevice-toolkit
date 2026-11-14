@@ -19,7 +19,7 @@
 - 不是越狱：没有 root，读不了系统分区；只能调用 RSD 暴露出来的服务。
 - 需要 Surge（≥ 5.23）把 `10.7.0.1` 反射回本机。
 - 需要一个 RemotePairing 格式的配对文件，获取方式见 [配对指南](references/PAIRING_GUIDE_zh.md)。
-- 首次运行需要一次 USB 连接（由电脑或任意 USB 主机发起）让 `remoted` 通告 listener；配对记录本身可以纯机内获取（见配对指南）。listener 掉线后的恢复见 Q2。
+- 首次运行需要一次 USB 连接（由电脑或任意 USB 主机发起）让 `remoted` 通告 listener；配对记录本身可以纯机内获取（见配对指南）。listener 掉线后的恢复见 Q3。
 - 实测环境：iPhone 14（iPhone14,7）/ iOS 27.3，宿主 Minis 1.16。其它版本没有在本仓库验证过。
   仓库没有 CI，也没有可复现的测试脚本，文档里的「实测」都是单机单次观察。
 
@@ -129,12 +129,35 @@ cdtk-profile list
 `coredevice_session` 会探测 RPPairing 魔数来区分「活 listener」和「哑 listener」，并按
 `CDTK_RSD_PORT` → `/tmp/.cdtk_rsd_port.json` 缓存 → 49152 → 扫描 49152–65535 的顺序找端口。
 
-**Q2：确认回环正常（有 RPPairing 回包）之后仍然没有 listener**
+**Q2：两条 cdtk 命令同时跑，其中一条「中途断连」或报 0 字节**
 
-说明 `remoted` 关掉了监听（双身份 re-attach / 锁屏挂起）。这时解锁、重启手机、重连代理都没用，
-可靠的办法是用数据线重插一次 USB。
+`remoted` 对来的连接有一条不通融的规则（iOS 27.x 逻辑，注释见 `pymobiledevice3` 的
+`remote/remotexpc.py`）：**按源地址替换** —— 新连接的源 IP 与已有 peer 相同，就先取消那条 peer 的连接，
+连握手都还没读。单机回环反射下所有进程源地址都一样，所以同一时刻只允许一条 RSD 会话：
 
-**Q3：握手身份**
+- 后到的把先到的踩死 → 先到的报 `ConnectionRefused` / 中途断连 / `0 bytes read`；
+- 端口扫描（向成千个端口建连）会连番替换，几乎必然踩掉另一个会话。
+
+**已内置跨进程互斥**：`CoreDeviceSession` 进出隧道全程持有 `/tmp/.cdtk_session.lock`（`flock`），
+后到的命令打印「另一条 cdtk 会话正在使用设备，排队等待…」后串行执行；`cdtk-doctor` 的第 4–6 步
+（扫描 + 真握手 + 建隧道）持同一把锁。默认排队上限 120 秒，超时报 `另一条 cdtk 会话占用设备超过 120s`。
+
+| 环境变量            | 作用                                     |
+| ------------------- | ---------------------------------------- |
+| `CDTK_LOCK_TIMEOUT` | 排队上限秒数，默认 120，`0` = 不限时     |
+| `CDTK_LOCK_FILE`    | 锁文件路径，默认 `/tmp/.cdtk_session.lock` |
+| `CDTK_NO_LOCK=1`    | 关掉互斥（只在你自行保证串行时用）       |
+
+要让多条命令真正并行，得给每条会话分配**不同的回环源地址**（各自的代理反射规则），
+仅靠进程隔离是做不到的。
+
+**Q3：确认回环正常（有 RPPairing 回包）之后仍然没有 listener**
+
+说明 `remoted` 关掉了监听（双身份 re-attach / 锁屏挂起 / 被并发会话踩掉）。这时解锁、重启手机、
+重连代理都没用，可靠的办法是用数据线重插一次 USB。先确认不是 Q2 那种自踩：
+`pgrep -f cdtk-` 看有没有残留进程，`cdtk-doctor` 会清理一天以上、进程已不在的残留会话目录。
+
+**Q4：握手身份**
 
 `remoted` 记得每个 peer 的握手 UUID，UUID 变了就 re-attach，一次性关掉该 peer 通告过的全部 listener。
 本工具链在 pair-verify 和 RSD 握手里都用配对记录的 `identifier`；`CDTK_HOST_UUID` 可覆盖，`CDTK_DEBUG=1` 打印实际值。
@@ -147,7 +170,7 @@ cdtk-profile list
 | `CDTK_HOST_UUID`      | 覆盖握手身份         |
 | `CDTK_DEBUG=1`        | 打印调试信息         |
 
-**Q4：用 `cdtk-ctrl launch` 把宿主 App 自己拉回前台，进程被杀**
+**Q5：用 `cdtk-ctrl launch` 把宿主 App 自己拉回前台，进程被杀**
 
 宿主 App 指正在跑本工具链的那个 App。`cdtk-ctrl launch` 默认 `kill_existing=True`
 （源码 `launch_application(bundle_id, kill_existing=not args.no_kill)`），会**先杀掉目标 App 的现有实例再拉起**。
@@ -156,7 +179,7 @@ cdtk-profile list
 **规则**：拉起别的 App 随便用；切回宿主用 `cdtk-ctrl launch <宿主 bundle id> --no-kill`（只激活不杀），
 或人工点图标。不想弹「请先勿触碰屏幕」横幅加 `--no-notify`。
 
-**Q5：命令跑完后隧道还占资源吗**
+**Q6：命令跑完后隧道还占资源吗**
 
 不占。每条命令是独立进程，退出即释放 RSD 会话和 Node 子进程（单机观察：退出后 1 秒内查不到残留进程与监听端口）。
 正常退出不会留目录；被 `timeout` 或 SIGKILL 打断的会话会剩下一个含 `relay.sock` 的目录；`cdtk-doctor` 每次启动清理一天以上、且进程已不在的（`--no-sweep` 可跳过清理）。

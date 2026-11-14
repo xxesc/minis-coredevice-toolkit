@@ -473,11 +473,19 @@ async def main():
     doc.check_system_deps()
     doc.check_python_deps()
     rec = doc.check_pairing_file()
-    net_ok = await doc.check_loopback_network()
-    if net_ok:
-        await doc.check_device_handshake(rec)
-        await doc.check_tunnel(rec)
+    # 第 4/5/6 步都要真连 remoted（第 4 步的端口扫描更是向成千个端口建连），
+    # 全程持同一把会话锁：否则体检会把正在跑的 cdtk 装包/拷沙盒静默顶掉。
+    async with doc._load_cds().session_lock():
+        net_ok = await doc.check_loopback_network()
+        if net_ok:
+            await doc.check_device_handshake(rec)
+            await doc.check_tunnel(rec)
     return doc.print_summary()
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
+    from coredevice_session import SessionBusyError
+    try:
+        sys.exit(asyncio.run(main()))
+    except SessionBusyError as e:
+        print(f"\n  {FAIL} {e}")
+        sys.exit(3)

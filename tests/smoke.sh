@@ -97,5 +97,28 @@ else
     fail=1
 fi
 
+# 4. 会话互斥守卫（remoted 按源地址替换连接 → 同机同刻只允许一条 RSD 会话）
+#    代码里必须有锁，文档里必须解释锁；任一侧缺失说明有人把补丁删了。
+python3 - "$REPO" <<'PY' || fail=1
+import sys, pathlib
+repo = pathlib.Path(sys.argv[1])
+cds = (repo/"src"/"coredevice_session.py").read_text(encoding="utf-8")
+sess = cds.split("class CoreDeviceSession", 1)[-1]
+checks = [
+    ("lock: SessionLock defined",   "class SessionLock" in cds),
+    ("lock: session_lock helper",   "def session_lock(" in cds),
+    ("lock: flock in __aenter__",   "SessionLock()" in sess),
+    ("lock: unlocks on __aexit__",  "self._release_lock()" in sess),
+    ("lock: no lock on failure",    "_aenter_tunnel" in sess),
+    ("doc: CDTK_LOCK_TIMEOUT",      "CDTK_LOCK_TIMEOUT" in (repo/"README.md").read_text(encoding="utf-8")
+                                    and "CDTK_LOCK_TIMEOUT" in (repo/"README_zh.md").read_text(encoding="utf-8")),
+]
+bad = 0
+for name, ok in checks:
+    print(f"{name}".ljust(58) + ("ok" if ok else "FAIL"))
+    bad = bad or (0 if ok else 1)
+sys.exit(bad)
+PY
+
 [ "$fail" -eq 0 ] && echo "smoke: PASS" || echo "smoke: FAIL"
 exit "$fail"
