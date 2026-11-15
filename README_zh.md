@@ -176,8 +176,29 @@ cdtk-profile list
 （源码 `launch_application(bundle_id, kill_existing=not args.no_kill)`），会**先杀掉目标 App 的现有实例再拉起**。
 拉起宿主自己 = 自杀：界面报中断，日志里 PID 跳变、没有退出流程，系统崩溃目录里没有对应 `.ips`。
 
+这是**主动杀**，不是协议冲突的副作用。`--no-kill` 传下去是 `terminateExisting: false`，
+系统看到实例已存在就直接切前台，不走终止那一步。同一设备同一 App 连续四次 `launch`
+的 PID 对照（目标 `com.anthropic.claude`，非宿主，测量时不碰宿主自己）：
+
+| 调用 | 返回 PID |
+| ---- | -------- |
+| `launch`（默认） | 10129 |
+| `launch`（默认，再来一次） | **10130** ← 换新进程 |
+| `launch --no-kill` | 10130 |
+| `launch --no-kill`（再来一次） | **10130** ← 不动 |
+
 **规则**：拉起别的 App 随便用；切回宿主用 `cdtk-ctrl launch <宿主 bundle id> --no-kill`（只激活不杀），
 或人工点图标。不想弹「请先勿触碰屏幕」横幅加 `--no-notify`。
+
+**别跟 Q2 混为一谈**。两件事症状像、原因不同：
+
+| | 触发 | 表现 | 解法 |
+| --- | --- | --- | --- |
+| 本条 | `launch` 省略 `--no-kill` | 宿主进程被**主动终止**后重启，PID 变、界面「已中断」 | 加 `--no-kill` |
+| Q2 | 两条 cdtk 命令**同时**跑 | 后到的踩死先到的，报 `ConnectionRefused` / `0 bytes read` | 串行执行（已有跨进程锁） |
+
+加 `--no-kill` 之后回宿主是安全的：进程不重启，正在跑的 shell 命令和会话上下文都不受影响。
+把宿主切到后台的也不是 `launch`，是 iOS 的后台挂起策略。
 
 **Q6：命令跑完后隧道还占资源吗**
 

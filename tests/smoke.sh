@@ -120,5 +120,24 @@ for name, ok in checks:
 sys.exit(bad)
 PY
 
+# 5. Q5 的归因不能退回旧说法：必须点明是 kill_existing 主动终止，且与 Q2 的并发互踢分开。
+python3 - "$REPO" <<'PY' || fail=1
+import sys, pathlib
+repo = pathlib.Path(sys.argv[1])
+checks = []
+for name, bad_phrase, must in [
+    ("README_zh", "对宿主自己调用会触发系统终止", ["kill_existing", "--no-kill", "Q2"]),
+    ("README", "calling it on the host itself triggers the termination", ["kill_existing", "--no-kill", "Q2"]),
+]:
+    text = (repo / (name + ".md")).read_text(encoding="utf-8")
+    checks.append((f"q5 cause: {name}.md", "kill_existing" in text and "--no-kill" in text and "Q2" in text))
+    checks.append((f"q5 no old wording: {name}.md", bad_phrase not in text))
+bad = 0
+for name, ok in checks:
+    print(name.ljust(58) + ("ok" if ok else "FAIL"))
+    bad = bad or (0 if ok else 1)
+sys.exit(bad)
+PY
+
 [ "$fail" -eq 0 ] && echo "smoke: PASS" || echo "smoke: FAIL"
 exit "$fail"

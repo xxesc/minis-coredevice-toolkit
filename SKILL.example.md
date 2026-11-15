@@ -61,7 +61,8 @@ cdtk-springboard backup layout.plist # 改主屏前先备份
 ## 注意
 
 - `cdtk-ctrl launch` 默认 `kill_existing=True`：会先杀目标 App 再拉起。切回宿主用
-  `cdtk-ctrl launch <宿主 bundle id> --no-kill`（只激活不杀），或人工点图标。
+  `cdtk-ctrl launch <宿主 bundle id> --no-kill`（只激活不杀，PID 不变），或人工点图标。
+  这是主动终止，与 Q2 的并发互踢是两回事，别混。
 - 工具链只在 Minis 宿主里可用；`cdtk-notify` 依赖 Minis 的 `apple-notification`。
 - 配对文件等同于设备调试凭据，不要提交到仓库或上传网盘。
 - `setup.sh` 是安装动作：会把 `/usr/local/bin/cdtk-*` 重指向本技能目录并覆盖 site-packages 里的共享库，

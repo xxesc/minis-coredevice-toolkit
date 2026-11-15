@@ -189,8 +189,29 @@ The host app is the one running this toolchain. `cdtk-ctrl launch` defaults to `
 starting a new one. Launching the host therefore kills it: the UI reports an interruption, the log shows a PID change
 with no shutdown sequence, and there is no matching `.ips`.
 
+That is a deliberate termination, not a side effect of a protocol clash. `--no-kill` sends
+`terminateExisting: false`, so the system sees the running instance and just foregrounds it. PID values from four
+consecutive `launch` calls on one device (target `com.anthropic.claude`, deliberately not the host):
+
+| call | PID |
+| ---- | --- |
+| `launch` (default) | 10129 |
+| `launch` (default, again) | **10130** ← new process |
+| `launch --no-kill` | 10130 |
+| `launch --no-kill` (again) | **10130** ← unchanged |
+
 **Rule**: launch other apps normally. Switch back to the host with
 `cdtk-ctrl launch <host bundle id> --no-kill` (activate only), or tap its icon. Add `--no-notify` to suppress the banner.
+
+**Keep this apart from Q2.** Same symptom area, different cause:
+
+| | trigger | what happens | fix |
+| --- | --- | --- | --- |
+| this entry | `launch` without `--no-kill` | the host is **terminated** and restarted; PID changes, UI says interrupted | add `--no-kill` |
+| Q2 | two cdtk commands running **at once** | the later one kills the earlier one's session: `ConnectionRefused` / `0 bytes read` | serialize (cross-process lock is built in) |
+
+With `--no-kill` the way back is safe: the process is not restarted, so a shell command in flight and the session
+context both survive. What can end a running command is iOS's background suspension, not `launch`.
 
 **Q6: Does the tunnel keep resources after a command finishes**
 
