@@ -128,8 +128,13 @@ returns the *previous* app's elements with no error at all. Matching prefers `*.
 Limits:
 
 - **Icon-only buttons** (back, more options, copy, send) have no text, so measure with `grid` and use `press --at`.
-- **Do not use `input` for text with spaces.** Under a Chinese pinyin IME the space is eaten as "confirm candidate"
-  (`minis skills` → `minisskills`) and valid-pinyin letters turn into Han characters. Use `paste`.
+- **`input` auto-routes to the clipboard.** Any text containing a space or non-ASCII goes straight to paste.
+  Keyboard input gets rewritten by the IME — pinyin eats the space as "confirm candidate" (`minis skills` →
+  `minisskills`) and converts valid-pinyin letters to Han characters; a third-party IME's English QWERTY mode
+  swallowed the space too. `--no-paste` forces the keyboard.
+- **A third-party IME may intercept `Cmd+V` as well.** Measured with Doubao IME: the pasted text landed in its
+  own clipboard strip and the field stayed empty. `paste` now reads the screen back and fails loudly instead of
+  claiming success; switch to the system keyboard when that happens.
 - **`input --submit` may not submit** — Return is swallowed the same way. Use `press "Go"` instead.
 - Element coordinates are not exposed (`Frame` / `AXFrame` return `None`), so tapping must go through coordinates.
   Apps that keep content in a WebContent process (Safari) have a near-empty tree — use OCR.

@@ -426,7 +426,11 @@ async def cmd_grid(args):
             d.text((3, y + 2), str(y), fill=(0, 120, 255))
             d.text((im.width - 52, y + 2), str(y), fill=(0, 120, 255))
         out = args.out or "cdtk_grid.png"
-        os.makedirs(os.path.dirname(out), exist_ok=True)
+        # 默认值是当前目录下的文件名，dirname 为空 —— os.makedirs("") 会抛
+        # FileNotFoundError。只有真的带目录时才创建。
+        _d = os.path.dirname(out)
+        if _d:
+            os.makedirs(_d, exist_ok=True)
         im.save(out)
     finally:
         try:
@@ -835,11 +839,28 @@ async def tap_and_settle(cx, cy, pre_sec=0.7, post_sec=1.5, fps=10):
 
 
 async def cmd_input(args):
-    """向输入框输入文本：点进输入框，再用虚拟键盘逐字符打字。"""
+    """向输入框输入文本。
+
+    **含空格或非 ASCII 的内容直接改走剪贴板**，不做键盘打字。
+    理由是实测：键盘输入会被输入法改写——中文拼音态下空格被当成「确认候选词」
+    吃掉、能拼成拼音的字母还会转成汉字（`aa bb cc` → `嗷嗷宝宝 cc`）；
+    连第三方输入法的英文 QWERTY 态也会吞空格（`minis skills` → `minisskills`）。
+    剪贴板粘贴完全绕开输入法，是唯一稳的路子。`--no-paste` 可强制走键盘。
+    """
+    if not args.no_paste and (" " in args.text or not args.text.isascii()):
+        why = "含空格" if " " in args.text else "含非 ASCII 字符"
+        print(f"文本{why} → 改走剪贴板粘贴（键盘输入会被输入法改写）")
+        args.allow = True                 # 自动点掉「允许粘贴」授权框
+        rc = await cmd_paste(args)
+        if rc == 0 and args.submit:
+            print("注意：粘贴路径不发回车。需要提交请另行 `cdtk-ui press \"前往\"`",
+                  file=sys.stderr)
+        return rc
+
     ok, bad = typeable(args.text)
     if not ok:
         print(f"这些字符不能用键盘输入：{bad!r}", file=sys.stderr)
-        print("中文等非 ASCII 内容请用 `cdtk-ui paste`（走剪贴板）。", file=sys.stderr)
+        print("去掉 --no-paste 让它自动走剪贴板。", file=sys.stderr)
         return 1
 
     tgt = await resolve_target(args)
@@ -976,6 +997,25 @@ async def cmd_paste(args):
                     await hid_tap(svc, W2, H2, ax_, ay_)
                 else:
                     print("没有授权框（可能已记住选择）")
+
+    # 落盘校验：Cmd+V 发出去不等于文字进了输入框。
+    # 实测教训：豆包输入法会把 Cmd+V 收进它自己的「剪贴板候选条」，
+    # 内容停在键盘上方那条里，输入框一个字都没有——而工具却照样打印
+    # 「粘贴指令已发出」，看起来像成功。这种静默失败必须报出来。
+    try:
+        items2, _ = await screenshot_and_ocr()
+        got = _norm("".join(t for t, _x, _y in items2))
+        probe = _norm(args.text)[:20]
+        if probe and probe in got:
+            print("粘贴确认：文字已出现在屏幕上 ✓")
+        else:
+            print("粘贴未落进输入框！内容可能被输入法收进了它的剪贴板候选条"
+                  "（键盘上方那一行），或剪贴板为空。"
+                  "换用系统自带键盘，或手动点一下候选条。", file=sys.stderr)
+            return 1
+    except Exception as e:
+        print(f"落盘校验跳过（{type(e).__name__}）", file=sys.stderr)
+
     print("粘贴指令已发出")
     return 0
 
@@ -1021,6 +1061,8 @@ def main():
     pi.add_argument("--match", choices=["smart", "exact", "contains"], default="smart")
     pi.add_argument("--submit", action="store_true", help="输入后按回车")
     pi.add_argument("--no-verify", action="store_true", help="输入后不回读校验")
+    pi.add_argument("--no-paste", action="store_true",
+                    help="即使含空格/非 ASCII 也强制走键盘打字（默认自动改走剪贴板）")
     pi.add_argument("--clear", action="store_true", help="先按退格清空")
     pi.add_argument("--clear-len", type=int, default=30, help="退格次数（默认 30）")
     pi.add_argument("--dry-run", action="store_true")
