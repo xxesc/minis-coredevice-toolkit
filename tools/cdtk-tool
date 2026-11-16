@@ -8,11 +8,10 @@
 
 用法:
   cdtk-tool ls                        列出工具与安装状态
-  cdtk-tool rm <name>... [--no-push] [--dry-run] [--smoke]
+  cdtk-tool rm <name>... [--no-push] [--dry-run]
   cdtk-tool add <file>... [--no-push] 安装新工具（加 setup.sh + 软链 + 提交）
-  cdtk-tool check                     结构一致性 + 全量 smoke（约 30s）
-
-默认只跑毫秒级结构检查；加 --smoke 才跑完整 tests/smoke.sh。
+  cdtk-tool check                     结构一致性（毫秒级）
+  cdtk-tool smoke                     手动跑 tests/smoke.sh（约 30s，不进任何流程）
 """
 import os
 import re
@@ -167,7 +166,7 @@ def cmd_rm(args):
     push = '--no-push' not in args
     dry = '--dry-run' in args
     if not names:
-        sys.exit('用法: cdtk-tool rm <name>... [--no-push] [--dry-run] [--smoke]')
+        sys.exit('用法: cdtk-tool rm <name>... [--no-push] [--dry-run]')
     t0 = time.time()
     for name in names:
         print('▶ %s' % name)
@@ -226,9 +225,8 @@ def cmd_rm(args):
     if dry:
         print('\n[dry-run] 未落盘，耗时 %.1fs' % (time.time() - t0))
         return
-    gate = smoke() if '--smoke' in args else static_ok()
-    if not gate:
-        sys.exit('\n✗ 检查未通过，已停在提交前（git checkout 可回滚）')
+    if not static_ok():
+        sys.exit('\n✗ 结构检查未通过，已停在提交前（git checkout 可回滚）')
     git_commit_push('chore: 移除 %s' % ' '.join(names), push)
     print('\n✓ 完成，耗时 %.1fs' % (time.time() - t0))
 
@@ -254,17 +252,14 @@ def cmd_add(args):
     write_setup_tools(names)
     relink()
     print('  setup.sh 注册 + 软链就绪')
-    gate = smoke() if '--smoke' in args else static_ok()
-    if not gate:
-        sys.exit('\n✗ 检查未通过，已停在提交前')
+    if not static_ok():
+        sys.exit('\n✗ 结构检查未通过，已停在提交前')
     git_commit_push('feat: 新增 %s' % ' '.join(Path(f).name for f in files), push)
     print('\n✓ 完成，耗时 %.1fs' % (time.time() - t0))
 
 
 def cmd_check():
-    ok = static_ok()
-    sot = smoke()
-    sys.exit(0 if (ok and sot) else 1)
+    sys.exit(0 if static_ok() else 1)
 
 
 def main():
@@ -273,7 +268,8 @@ def main():
         return
     cmd, rest = sys.argv[1], sys.argv[2:]
     {'ls': cmd_ls, 'rm': lambda: cmd_rm(rest),
-     'add': lambda: cmd_add(rest), 'check': cmd_check}.get(
+     'add': lambda: cmd_add(rest), 'check': cmd_check,
+     'smoke': lambda: sys.exit(0 if smoke() else 1)}.get(
         cmd, lambda: sys.exit('未知命令: ' + cmd))()
 
 
