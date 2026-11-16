@@ -94,24 +94,37 @@ def find_signing_assets(cert_arg=None, prov_arg=None, pass_arg=None):
     return None, None, None
 
 def inspect_ipa(ipa_path):
+    """读取 IPA 主 App 的 bundle id / 名称，并只认主 App 本体的签名。
+
+    以前用 `"_CodeSignature" in n` 扫任意成员：只要某个嵌套 framework/appex
+    残留签章目录就误判"已签名"，于是跳过重签直装，最后在设备侧报 0xe8008016。
+    """
     orig_bid = ""
     app_name = ""
     has_signature = False
     try:
-        with zipfile.ZipFile(ipa_path, "r") as z:
-            names = z.namelist()
-            for n in names:
-                if n.endswith("Info.plist") and n.count("/") == 2:
-                    try:
-                        pl = plistlib.loads(z.read(n))
-                        orig_bid = pl.get("CFBundleIdentifier", "")
-                        app_name = pl.get("CFBundleDisplayName") or pl.get("CFBundleName", "")
-                    except Exception:
-                        pass
-                if "_CodeSignature" in n:
-                    has_signature = True
-    except Exception:
-        pass
+        z = zipfile.ZipFile(ipa_path, "r")
+    except Exception as e:
+        raise RuntimeError(f"无法作为 zip 打开 IPA（文件损坏或不是 IPA）: {e}")
+    with z:
+        names = z.namelist()
+        main_app = None
+        for n in names:
+            parts = n.split("/")
+            if len(parts) >= 2 and parts[0] == "Payload" and parts[1].endswith(".app"):
+                main_app = parts[1]
+                break
+        for n in names:
+            if n.endswith("Info.plist") and n.count("/") == 2:
+                try:
+                    pl = plistlib.loads(z.read(n))
+                    orig_bid = pl.get("CFBundleIdentifier", "")
+                    app_name = pl.get("CFBundleDisplayName") or pl.get("CFBundleName", "")
+                except Exception:
+                    pass
+        if main_app:
+            want = f"Payload/{main_app}/_CodeSignature/CodeResources"
+            has_signature = want in names
     return orig_bid, app_name, has_signature
 
 def _find_rcodesign():
@@ -470,8 +483,17 @@ async def cmd_install(args):
         need_sign = True
 
     if not need_sign and (getattr(args, "bundle_id", None) or getattr(args, "name", None)):
-        print("⚠️  -b / -n 只在重新签名时生效；本次没有重签（IPA 已带签名且未给 -s，或指定了 --no-sign），这两个参数会被忽略。",
-              file=sys.stderr)
+        print("❌ 已带签名的 IPA 无法在不重签的情况下改 Bundle ID / 显示名。", file=sys.stderr)
+        print("   请加 -s/--sign 强制重签，或去掉 -b / -n 后重试。", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        size = os.stat(ipa_path).st_size
+        if size > 1_200_000_000:
+            print(f"⚠️  IPA 体积 {size / 1e9:.2f} GB：安装链路会把整包读进内存，"
+                  f"iSH 下可能 OOM 被杀；建议先在电脑上拆分/精简。", file=sys.stderr)
+    except OSError:
+        pass
 
     if need_sign:
         p12, prov, pwd = find_signing_assets(args.cert, args.prov, args.password)

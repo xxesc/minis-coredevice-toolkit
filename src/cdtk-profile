@@ -18,17 +18,26 @@ from pymobiledevice3.services.mobile_config import MobileConfigService
 
 KEYBAG_ENV = "CDTK_PROFILE_KEYBAG"
 
+def _check_pem(p: Path):
+    """粗校验：必须像 PEM 私钥，否则 install_profile_silent 会在更深的地方抛 ValueError。"""
+    head = p.read_text(errors="replace")[:4096]
+    if "-----BEGIN" not in head or "PRIVATE KEY" not in head:
+        raise ValueError(f"监管身份文件看起来不是 PEM 私钥: {p}")
+
+
 def resolve_keybag(explicit: str | None) -> Path | None:
     """定位监管身份 (supervision identity) PEM keybag。仅接受显式参数或环境变量。"""
     if explicit:
         p = Path(explicit)
         if p.is_file():
+            _check_pem(p)
             return p
         raise FileNotFoundError(f"指定的监管身份文件不存在: {explicit}")
     env_k = os.environ.get(KEYBAG_ENV)
     if env_k:
         p = Path(env_k)
         if p.is_file():
+            _check_pem(p)
             return p
         raise FileNotFoundError(f"环境变量 {KEYBAG_ENV} 指定的文件不存在: {env_k}")
     return None
@@ -107,9 +116,15 @@ async def cmd_install(args) -> int:
             try:
                 await mc._send_recv({"RequestType": "InstallProfileSilent", "Payload": payload})
                 mode = "InstallProfileSilent（协议层静默）"
-            except ProfileError:
-                await mc.install_profile(payload)
-                mode = "InstallProfile（经 MCInstall 直接下发，免跳转 Safari）"
+            except ProfileError as e:
+                # 设备对任何非 Acknowledged 都抛 ProfileError，这里不能断定"只是不支持静默"
+                print(f"ℹ️  静默下发未获确认（{str(e)[:120]}），改用常规下发…")
+                try:
+                    await mc.install_profile(payload)
+                    mode = "InstallProfile（经 MCInstall 直接下发，免跳转 Safari）"
+                except Exception as e2:
+                    print(f"❌ 描述文件下发失败: {e2}", file=sys.stderr)
+                    return 1
         
         resp = await mc.get_profile_list()
         metadata = resp.get("ProfileMetadata") or {}
@@ -117,6 +132,9 @@ async def cmd_install(args) -> int:
         try:
             ident = plistlib.loads(payload).get("PayloadIdentifier")
         except Exception:
+            # 正常 CMS 签名的 .mobileconfig 是二进制包裹，plistlib 解不开
+            print("ℹ️  无法从文件本身读出 PayloadIdentifier（多为 CMS 签名包裹），"
+                  "改用设备返回的列表做匹配。")
             ident = None
         if ident and ident in metadata:
             installed = metadata[ident]
@@ -157,18 +175,15 @@ async def cmd_remove(args) -> int:
         target_meta = metadata.get(ident)
         if not target_meta:
             matches = [k for k in metadata if ident.lower() in k.lower()]
-            if len(matches) == 1:
-                ident = matches[0]
-                target_meta = metadata[ident]
-                print(f"💡 自动模糊匹配到唯一描述文件: {ident}")
-            elif len(matches) > 1:
-                print(f"❌ 找到多个匹配的描述文件，请提供精确 Identifier：")
+            if matches:
+                # 模糊匹配只做提示：子串很容易命中另一个描述文件（"com.apple" 会匹配到 com.apple.xxx）
+                print(f"❌ Identifier 必须精确匹配。'{ident}' 只是以下条目的子串：")
                 for m in matches:
                     print(f"   • {m}")
-                return 1
+                print("   请从上面复制完整 Identifier 重试。")
             else:
                 print(f"❌ 未找到 Identifier 为 '{ident}' 的描述文件。请运行 cdtk-profile list 核对。")
-                return 1
+            return 1
 
         display = target_meta.get("PayloadDisplayName") or ident
         print(f"🚀 正在移除: {display} ...")
@@ -212,4 +227,12 @@ def main():
         sys.exit(asyncio.run(cmd_remove(args)))
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except Exception as e:
+        print(f"❌ {e}", file=sys.stderr)
+        sys.exit(1)
