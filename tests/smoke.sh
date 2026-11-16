@@ -23,8 +23,14 @@ for d in src scripts; do
 done
 [ -n "$SRC" ] || { echo "smoke: FAIL (no src/ or scripts/ with cdtk-* tools)"; exit 1; }
 
+# 文档范围：README / SKILL.md，加上 references/ 下的详解文档。
+# 排障细节从 README 搬进了 references/TROUBLESHOOTING*.md，
+# 所以「文档里提到的东西代码里必须有」这类检查要跟着扩到 references。
 DOCS=""
 for f in "$REPO/README.md" "$REPO/README_zh.md" "$REPO/SKILL.md"; do
+    [ -f "$f" ] && DOCS="$DOCS $f"
+done
+for f in "$REPO"/references/*.md; do
     [ -f "$f" ] && DOCS="$DOCS $f"
 done
 [ -n "$DOCS" ] || { echo "smoke: FAIL (no README*.md or SKILL.md)"; exit 1; }
@@ -174,6 +180,28 @@ for name, ok in checks:
     bad = bad or (0 if ok else 1)
 sys.exit(bad)
 PY
+
+# 5. Q5 的归因不能退回旧说法：必须点明是 kill_existing 主动终止，且与 Q2 的并发互踢分开。
+python3 - "$REPO" <<'PYEOF' || fail=1
+import sys, pathlib
+repo = pathlib.Path(sys.argv[1])
+checks = []
+for name, bad_phrase in [
+    ("README_zh", "对宿主自己调用会触发系统终止"),
+    ("README", "calling it on the host itself triggers the termination"),
+]:
+    doc = repo / (name + ".md")
+    if not doc.exists():          # 技能布局只有 SKILL.md，没有 README
+        continue
+    text = doc.read_text(encoding="utf-8")
+    checks.append((f"q5 cause: {name}.md", "kill_existing" in text and "--no-kill" in text and "Q2" in text))
+    checks.append((f"q5 no old wording: {name}.md", bad_phrase not in text))
+bad = 0
+for name, ok in checks:
+    print(name.ljust(58) + ("ok" if ok else "FAIL"))
+    bad = bad or (0 if ok else 1)
+sys.exit(bad)
+PYEOF
 
 [ "$fail" -eq 0 ] && echo "smoke: PASS" || echo "smoke: FAIL"
 exit "$fail"

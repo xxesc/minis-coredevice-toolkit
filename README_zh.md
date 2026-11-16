@@ -16,18 +16,16 @@
 
 **边界**
 
-- 不是越狱：没有 root，读不了系统分区；只能调用 RSD 暴露出来的服务。
-- 需要 Surge（≥ 5.23）把 `10.7.0.1` 反射回本机。
-- 需要一个 RemotePairing 格式的配对文件，获取方式见 [配对指南](references/PAIRING_GUIDE_zh.md)。
-- 首次运行需要一次 USB 连接（由电脑或任意 USB 主机发起）让 `remoted` 通告 listener；配对记录本身可以纯机内获取（见配对指南）。listener 掉线后的恢复见 Q3。
-- 实测环境：iPhone 14（iPhone14,7）/ iOS 27.3，宿主 Minis 1.16。其它版本没有在本仓库验证过。
-  仓库没有 CI，也没有可复现的测试脚本，文档里的「实测」都是单机单次观察。
-
----
+- 不是越狱：没有 root，读不了系统分区，只能调用 RSD 暴露出来的服务。
+- 需要 Surge ≥ 5.23 把 `10.7.0.1` 反射回本机（见 [回环指南](references/SURGE_LOOPBACK_zh.md)）。
+- 需要一份 RemotePairing 格式的配对文件（见 [配对指南](references/PAIRING_GUIDE_zh.md)）。
+- 首次运行需要一次 USB 连接让 `remoted` 通告 listener；配对记录本身可纯机内获取。
+- 实测环境：iPhone 14 / iOS 27.3，宿主 Minis 1.16。其它版本未验证。
+  仓库没有 CI，「实测」都是单机单次观察。
 
 ## 原理
 
-`cdtk-*` 启动 → 从配对记录取密钥 → 起 Node.js TLS-PSK 桥接 → 在 `pmd-pytcp` 用户态协议栈上连
+`cdtk-*` 从配对记录取密钥 → 起 Node.js TLS-PSK 桥接 → 在 `pmd-pytcp` 用户态协议栈上连
 `10.7.0.1:<rsd_port>` → RSD 握手拿服务表 → 用 RemoteXPC 调具体服务 → 命令结束即拆隧道。
 
 ```text
@@ -36,17 +34,13 @@ cdtk-* ── coredevice_session ──► 10.7.0.1:49xxx ──► remoted ─�
         └ Node TLS-PSK relay + pytcp userspace stack
 ```
 
----
-
 ## 前置条件
 
 1. iOS 设备，已开启「开发者模式」；
 2. 宿主 Minis（iSH / Alpine Linux，aarch64）；
 3. Surge ≥ 5.23，按 [回环指南](references/SURGE_LOOPBACK_zh.md) 配置 `10.7.0.1`；
-4. 配对文件，放在 `/root/.cdtk/pairing/`（0600）—— 见 [配对指南](references/PAIRING_GUIDE_zh.md)；
+4. 配对文件放在 `/root/.cdtk/pairing/`（0600），见 [配对指南](references/PAIRING_GUIDE_zh.md)；
 5. 一台电脑（只在 listener 掉线需要重插 USB 时用到）。
-
----
 
 ## 安装
 
@@ -64,10 +58,8 @@ sh setup.sh
 cdtk-doctor          # 中文输出加 --zh
 ```
 
-它跑六步：运行时、Python 模块、配对文件与权限、回环端口、Pair-Verify 握手，最后**真建一次隧道**（`createListener`）。
-只有第 6 步通过才说明通道可用——Pair-Verify 只验 host 签名。有问题会给出修复命令。默认把设备标识符打码，`--show-udid` 才显示完整值。
-
----
+六步：运行时、Python 模块、配对文件与权限、回环端口、Pair-Verify 握手，最后**真建一次隧道**。
+只有第 6 步通过才说明通道可用——Pair-Verify 只验 host 签名。默认打码设备标识符，`--show-udid` 才显示完整值。
 
 ## 工具矩阵
 
@@ -86,12 +78,8 @@ cdtk-doctor          # 中文输出加 --zh
 | `cdtk-springboard` | 主屏布局备份 / 下发      |
 | `cdtk-proc`        | Jetsam 豁免、信号        |
 
-`-h` 对绝大多数命令有效；`cdtk-doctor -h` 不会打印帮助，而是直接开始体检，`cdtk-notify` 用无参数运行看用法。
-
-`cdtk-install` 优先用 `zsign` 签名；找不到时自动回退 `rcodesign`：解包 IPA → 换 `embedded.mobileprovision` →
-按描述文件 entitlements 签 bundle → 重打包。密码可以写成 `密码：xxx`，会自动剥掉前缀。
-
----
+`-h` 对绝大多数命令有效；`cdtk-doctor -h` 会直接开始体检，`cdtk-notify` 无参数运行看用法。
+`cdtk-install` 优先用 `zsign` 签名，找不到时回退 `rcodesign`（解包 → 换 profile → 按 entitlements 重签 → 重打包）。
 
 ## 常用命令
 
@@ -100,214 +88,90 @@ cdtk-diag hw                                # 电池健康
 cdtk-ctrl procs --apps-only                 # 正在跑的 App
 cdtk-ctrl launch com.example.demo           # 拉起 App
 cdtk-ctrl tap 585 642                       # 像素坐标（原生竖屏，与截图一致）
-cdtk-ctrl swipe 585 1800 585 600            # 滑动
-cdtk-install list
-cdtk-install info com.example.demo          # 签名主体、沙盒路径、App Groups
 cdtk-install install app.ipa -y             # 直装（-y 必填）
+cdtk-install info com.example.demo          # 签名主体、沙盒路径、App Groups
 cdtk-install install app.ipa -y -s -b com.example.demo2 -n "Demo2"   # 换 bundle id 必须加 -s
 cdtk-crash list -n 10
-cdtk-crash view <file.ips>
 cdtk-profile list
 ```
 
-需要确认的命令：`install`、`uninstall`、`profile install/remove`、`proc signal` 不给 `-y` 直接拒绝；`springboard apply` 不给 `-y` 会转成交互式确认。
-文档里的示例值都是占位符：`com.example.demo` 只是格式演示，与任何真实应用无关。`cdtk-doctor` 里那行 `配对标识` 打印的是配对记录的
-`identifier`（UUID），默认已打码，不是设备 UDID。
-已知限制：`-b` / `-n` 只在真正签名时生效；已经带签名的 IPA 不给 `-s` 会被静默忽略。
-
----
+写操作（`install` / `uninstall` / `profile install|remove` / `proc signal`）不给 `-y` 直接拒绝；
+`springboard apply` 不给 `-y` 会转成交互式确认。示例里的 `com.example.demo` 只是格式占位。
 
 ## 界面读写（cdtk-ui）
 
-`cdtk-ctrl` 只会「按坐标点」，它不知道屏幕上有什么。`cdtk-ui` 补上这一层：
-截图 + OCR 得到「屏幕上有哪些字、各在什么位置」，再把文字映射回坐标去点。
+`cdtk-ctrl` 只按坐标点，不知道屏幕上有什么。`cdtk-ui` 用截图 + OCR 补上这层：
+找到文字 → 映射成坐标 → 点击 → 判定界面有没有动、动完没有。
 
 ```bash
-cdtk-ui tree                              # 可聚焦元素（无障碍标签）
-cdtk-ui tree --app minis                   # 指定目标 App（不给就沿用上次那个）
-cdtk-ui find "添加附件"                    # 按文本查元素
-cdtk-ui press "发送"                       # 按文字点；点完报告界面有没有动
-cdtk-ui press "某条历史消息" --scroll 4     # 当前屏没有就滚动搜索
-cdtk-ui press --at 1042,173                # 纯图标按钮只能给坐标
-cdtk-ui grid                               # 截图叠坐标网格，方便量 --at
-cdtk-ui paste "中文或含空格的内容" --allow   # 走剪贴板，最稳
-cdtk-ui input "abc"                        # 纯 ASCII 单词；打完会回读校验
+cdtk-ui tree --app minis                # 可聚焦元素（无障碍标签）
+cdtk-ui press "发送"                     # 按文字点；报告「有没有变 / 变了多少 / 动完没有」
+cdtk-ui press "某条历史消息" --scroll 4   # 当前屏没有就滚动搜索
+cdtk-ui press --at 1042,173              # 纯图标按钮只能给坐标
+cdtk-ui grid                             # 截图叠坐标网格，量坐标用
+cdtk-ui paste "含空格或中文的内容" --allow  # 走剪贴板，最稳
+cdtk-ui input "abc"                      # 纯 ASCII 单词；打完回读校验
 ```
 
-**定位以 OCR 为主，元素树为辅。** 元素树是滚动相关而且不完整的——SwiftUI 会虚拟化，
-不在视野内的元素根本不在树里（同一屏实测有时 267 个、有时只有 21 个）。
-而 OCR 只看可见区域，恰好等于「能不能点」的判据：看得见才点得到。
-元素树因此降级为「找不到时的诊断信息」。
+**定位以 OCR 为主**：元素树滚动相关且不完整（SwiftUI 虚拟化），OCR 只看可见区域，恰好等于「能不能点」。
 
-**`--app` 建议显式给。** 审计 daemon 会在设备上记住上一次设的目标进程，
-切到别的 App 之后不给 `--app`，读到的仍是**上一个 App 的元素**——读错应用却完全不报错。
-`--app` 接受 bundle id 或名称片段（`safari`、`MobileSafari`、`com.openminis.app`）。
-匹配时优先 `*.app/<同名可执行文件>`，避开 `.appex` / `PlugIns` / `.xpc`——
-Safari 就有 `MobileSafari` 本体和 `SafariWebExtension` 好几个同名进程，
-不区分的话会绑到扩展进程上去，结果读到 0 个元素。
-另外 Safari 这类把内容放在 WebContent 进程里的 App，元素树本来就近乎为空，
-读界面请依赖 OCR（`press` / `grid`）而不是元素树。
+**`--app` 建议显式给**：审计 daemon 会记住上次的目标进程，切了 App 不给 `--app` 会读到**上一个 App 的元素**，
+且完全不报错。匹配优先 `*.app/<同名可执行文件>`，避开 `.appex` / `PlugIns`（Safari 就有 `MobileSafari`
+和 `SafariWebExtension` 几个同名进程）。
 
-`press` 点完会顺带判定界面：取点击前的基线帧 → 注入触摸 → 连抓一段视频流帧比对，
-报告「屏幕有没有变 / 变了多少 / 动完没有」。这套判定移植自 iCTRL 的 ScreenSettle
-（36×78 粗网格吸收噪声，跳过状态栏那几行，阈值区分「没反应 / 在动 / 动完了」）。
+限制：
 
-### 已知边界
-
-* **纯图标按钮点不了**（返回、更多选项、拷贝、发送）——屏幕没有文字，OCR 定位不到。
-  用 `cdtk-ui grid` 量出坐标再 `press --at X,Y`。
-* **含空格的 ASCII 不要用 `input`**。键盘处于中文拼音态时，空格会被当成「确认候选词」
-  吃掉（`minis skills` → `minisskills`），能拼成拼音的字母还会被转成汉字
-  （`aa bb cc` → `嗷嗷宝宝 cc`）。而 `openmins` 这种非法拼音反而原样保留，
-  所以「有时候能打对」最容易骗过人。`input` 打完会回读校验并报警，但更稳的是 `paste`。
-* **`input --submit` 的回车不一定能提交**——中文输入法下回车同样被吞。
-  工具会检测并在界面没变时提示，可靠做法是 `cdtk-ui press "前往"`。
-* **有的 App 悬浮按钮压在输入框/地址栏上**（iOS 26 Safari 就是一例），
-  OCR 给出的坐标可能落在浮层上。交互前先截图确认。
-* 元素坐标拿不到（`Frame` / `AXFrame` / `AXPosition` 全部返回 `None`），
-  所以 `perform_press` 用不了——这也是为什么点击必须绕回坐标。
-
----
+- **纯图标按钮**（返回 / 更多选项 / 拷贝 / 发送）屏幕无文字，只能 `grid` 量坐标 + `press --at`。
+- **含空格的 ASCII 别用 `input`**：中文拼音态下空格被当「确认候选词」吃掉（`minis skills` → `minisskills`），
+  能拼成拼音的字母还会变汉字。用 `paste`。
+- **`input --submit` 的回车也可能被吞**，可靠做法是 `press "前往"`。
+- 元素坐标拿不到（`Frame` / `AXFrame` 返回 `None`），所以只能绕回坐标点；Safari 这类把内容放在
+  WebContent 进程的 App，元素树近乎为空，只能靠 OCR。
 
 ## 排障
 
-**Q1：全线报 `ConnectionRefusedError 10.7.0.1:49152`，或「连上了但没回应」**
+| 现象 | 指向 |
+| --- | --- |
+| `ConnectionRefusedError 10.7.0.1:49152`，或连上但 0 字节回包 | Q1 回环或 listener |
+| 两条命令同跑，其中一条中途断连 / 报 `0 bytes read` | Q2 并发互踢（已内置锁） |
+| 回环有 RPPairing 回包但仍无 listener | Q3 需要重插一次 USB |
+| 握手身份变化后 listener 全关 | Q4 `CDTK_HOST_UUID` |
+| 把宿主 App 拉回前台后进程被杀、界面「已中断」 | Q5，见下 |
+| 命令结束后是否残留资源 | Q6 不占，退出即释放 |
 
-两种形态，按现象分开判断：
+**Q5 一句话**：`cdtk-ctrl launch` 默认 `kill_existing=True`，**先杀再起**；拉起宿主自己就是自杀。
+切回宿主必须加 `--no-kill`（传下去是 `terminateExisting: false`）。这和 Q2 是两件事：
+本条是**主动终止**，Q2 是两条命令并发、后到的踩死先到的。
 
-- `RST` / `ConnectionRefused`：那个端口上没有 listener；
-- TCP 连上但 0 字节回包：回环层接住了，`remoted` 不答话。Surge < 5.23 会静默丢掉 `[IP Rewrite]`，
-  表现就是这样——先确认 Surge 版本和那三行配置。
-
-`coredevice_session` 会探测 RPPairing 魔数来区分「活 listener」和「哑 listener」，并按
-`CDTK_RSD_PORT` → `/tmp/.cdtk_rsd_port.json` 缓存 → 49152 → 扫描 49152–65535 的顺序找端口。
-
-**Q2：两条 cdtk 命令同时跑，其中一条「中途断连」或报 0 字节**
-
-`remoted` 对来的连接有一条不通融的规则（iOS 27.x 逻辑，注释见 `pymobiledevice3` 的
-`remote/remotexpc.py`）：**按源地址替换** —— 新连接的源 IP 与已有 peer 相同，就先取消那条 peer 的连接，
-连握手都还没读。单机回环反射下所有进程源地址都一样，所以同一时刻只允许一条 RSD 会话：
-
-- 后到的把先到的踩死 → 先到的报 `ConnectionRefused` / 中途断连 / `0 bytes read`；
-- 端口扫描（向成千个端口建连）会连番替换，几乎必然踩掉另一个会话。
-
-**已内置跨进程互斥**：`CoreDeviceSession` 进出隧道全程持有 `/tmp/.cdtk_session.lock`（`flock`），
-后到的命令打印「另一条 cdtk 会话正在使用设备，排队等待…」后串行执行；`cdtk-doctor` 的第 4–6 步
-（扫描 + 真握手 + 建隧道）持同一把锁。默认排队上限 120 秒，超时报 `另一条 cdtk 会话占用设备超过 120s`。
-
-| 环境变量            | 作用                                     |
-| ------------------- | ---------------------------------------- |
-| `CDTK_LOCK_TIMEOUT` | 排队上限秒数，默认 120，`0` = 不限时     |
-| `CDTK_LOCK_FILE`    | 锁文件路径，默认 `/tmp/.cdtk_session.lock` |
-| `CDTK_NO_LOCK=1`    | 关掉互斥（只在你自行保证串行时用）       |
-
-要让多条命令真正并行，得给每条会话分配**不同的回环源地址**（各自的代理反射规则），
-仅靠进程隔离是做不到的。
-
-**Q3：确认回环正常（有 RPPairing 回包）之后仍然没有 listener**
-
-说明 `remoted` 关掉了监听（双身份 re-attach / 锁屏挂起 / 被并发会话踩掉）。这时解锁、重启手机、
-重连代理都没用，可靠的办法是用数据线重插一次 USB。先确认不是 Q2 那种自踩：
-`pgrep -f cdtk-` 看有没有残留进程，`cdtk-doctor` 会清理一天以上、进程已不在的残留会话目录。
-
-**Q4：握手身份**
-
-`remoted` 记得每个 peer 的握手 UUID，UUID 变了就 re-attach，一次性关掉该 peer 通告过的全部 listener。
-本工具链在 pair-verify 和 RSD 握手里都用配对记录的 `identifier`；`CDTK_HOST_UUID` 可覆盖，`CDTK_DEBUG=1` 打印实际值。
-
-| 环境变量              | 作用                 |
-| --------------------- | -------------------- |
-| `CDTK_RSD_PORT`       | 固定控制端口，不扫描 |
-| `CDTK_RSD_SCAN=0`     | 关闭扫描             |
-| `CDTK_RSD_SCAN_RANGE` | 缩小扫描范围         |
-| `CDTK_HOST_UUID`      | 覆盖握手身份         |
-| `CDTK_DEBUG=1`        | 打印调试信息         |
-
-**Q5：用 `cdtk-ctrl launch` 把宿主 App 自己拉回前台，进程被杀**
-
-宿主 App 指正在跑本工具链的那个 App。`cdtk-ctrl launch` 默认 `kill_existing=True`
-（源码 `launch_application(bundle_id, kill_existing=not args.no_kill)`），会**先杀掉目标 App 的现有实例再拉起**。
-拉起宿主自己 = 自杀：界面报中断，日志里 PID 跳变、没有退出流程，系统崩溃目录里没有对应 `.ips`。
-
-这是**主动杀**，不是协议冲突的副作用。`--no-kill` 传下去是 `terminateExisting: false`，
-系统看到实例已存在就直接切前台，不走终止那一步。同一设备同一 App 连续四次 `launch`
-的 PID 对照（目标 `com.anthropic.claude`，非宿主，测量时不碰宿主自己）：
-
-| 调用 | 返回 PID |
-| ---- | -------- |
-| `launch`（默认） | 10129 |
-| `launch`（默认，再来一次） | **10130** ← 换新进程 |
-| `launch --no-kill` | 10130 |
-| `launch --no-kill`（再来一次） | **10130** ← 不动 |
-
-**规则**：拉起别的 App 随便用；切回宿主用 `cdtk-ctrl launch <宿主 bundle id> --no-kill`（只激活不杀），
-或人工点图标。不想弹「请先勿触碰屏幕」横幅加 `--no-notify`。
-
-**别跟 Q2 混为一谈**。两件事症状像、原因不同：
-
-| | 触发 | 表现 | 解法 |
-| --- | --- | --- | --- |
-| 本条 | `launch` 省略 `--no-kill` | 宿主进程被**主动终止**后重启，PID 变、界面「已中断」 | 加 `--no-kill` |
-| Q2 | 两条 cdtk 命令**同时**跑 | 后到的踩死先到的，报 `ConnectionRefused` / `0 bytes read` | 串行执行（已有跨进程锁） |
-
-加 `--no-kill` 之后回宿主是安全的：进程不重启，正在跑的 shell 命令和会话上下文都不受影响。
-把宿主切到后台的也不是 `launch`，是 iOS 的后台挂起策略。
-
-**Q6：命令跑完后隧道还占资源吗**
-
-不占。每条命令是独立进程，退出即释放 RSD 会话和 Node 子进程（单机观察：退出后 1 秒内查不到残留进程与监听端口）。
-正常退出不会留目录；被 `timeout` 或 SIGKILL 打断的会话会剩下一个含 `relay.sock` 的目录；`cdtk-doctor` 每次启动清理一天以上、且进程已不在的（`--no-sweep` 可跳过清理）。
-`/tmp/.cdtk_rsd_port.json` 端口缓存是设计如此，会保留。
-
----
+完整判断依据、环境变量表、PID 实测对照见 [排障详解](references/TROUBLESHOOTING_zh.md)。
 
 ## 安全
 
-- **配对文件**：搜索顺序是 `CDTK_PAIRING_FILE` → `/root/.cdtk/pairing/`（0600）→ `/var/minis/workspace/cdtk/`。
-  最后一个在 Minis 里是所有会话共享的目录，权限自负；推荐只放前两个位置。
-- **不要提交配对记录**：`*.plist` 里是设备签名私钥，任何情况下都不要放进仓库或公开分享。
-- **PSK**：通过 stdin 交给 Node 子进程，不出现在命令行参数里。
-- **临时目录**：每次会话 `mkdtemp` + `0700`；正常退出删除，被外部杀掉会留下空目录。
-- **路由**：只新增 `10.7.0.1/32` 这一条主机路由用于捕获回环地址，不改动其它路由规则。
-
----
+- **配对文件**：搜索顺序 `CDTK_PAIRING_FILE` → `/root/.cdtk/pairing/`（0600）→ `/var/minis/workspace/cdtk/`。
+  最后一个是 Minis 全局会话共享目录，权限自负，推荐只用前两个。
+- **不要提交配对记录**：`*.plist` 里是设备签名私钥。
+- **PSK 走 stdin**，不出现在命令行参数里；临时目录 `mkdtemp` + `0700`，正常退出删除。
+- **路由**：只新增 `10.7.0.1/32` 一条主机路由，不改动其它规则。
 
 ## 做成技能（给别的助手用）
 
-仓库里没有放 `SKILL.md`（那是每个宿主自己的技能格式），但给了模板。三步：
+仓库不提供 `SKILL.md`（那是每个宿主自己的格式），只给模板 `SKILL.example.md`：
 
-1. 建目录，把脚本拷进去（目录名叫什么无所谓，`setup.sh` 按自身位置找文件）：
+```bash
+mkdir -p <skills>/coredevice-toolkit/scripts
+cp -r src/* <skills>/coredevice-toolkit/scripts/
+cp SKILL.example.md <skills>/coredevice-toolkit/SKILL.md     # 按需改 name / description / triggers
+sh <skills>/coredevice-toolkit/scripts/setup.sh
+cdtk-doctor
+```
 
-   ```bash
-   mkdir -p <skills>/coredevice-toolkit/scripts
-   cp -r src/* <skills>/coredevice-toolkit/scripts/
-   ```
-
-2. 用 `SKILL.example.md` 生成 `SKILL.md`，按需改 `name` / `description` / 触发词：
-
-   ```bash
-   cp SKILL.example.md <skills>/coredevice-toolkit/SKILL.md
-   ```
-
-3. 安装并自检：
-
-   ```bash
-   sh <skills>/coredevice-toolkit/scripts/setup.sh
-   cdtk-doctor
-   ```
-
-有三件事 AI 自己办不到，需要人配合：开开发者模式、配好 Surge 回环、导出一份配对文件（StikPair 或 wloc）。
+有三件事 AI 自己办不到，需要人配合：开开发者模式、配好 Surge 回环、导出一份配对文件。
 这三样不给，`cdtk-doctor` 第 3–6 步不会通过。
 
 ## 维护
 
-改代码或改文档后跑一次：
-
-```bash
-sh tests/smoke.sh
-```
-
-它检查三件事：每个工具都能打印用法、README 里出现的每个 `--flag` 在对应脚本里真实存在、`setup.sh` 注册的工具集合与工具表一致。它不碰设备，也不联网。
+改完代码或文档跑一次 `sh tests/smoke.sh`（不碰设备、不联网）。它检查：每个工具能打印用法、
+文档里出现的每个 `--flag` 在脚本里真实存在、`setup.sh` 注册的工具集合与工具表一致。
 
 ## 许可
 
