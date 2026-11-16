@@ -68,19 +68,13 @@ def find_signing_assets(cert_arg=None, prov_arg=None, pass_arg=None):
             if prov_files and not prov:
                 prov = str(prov_files[0])
             if not pwd:
-                pwd_files = list(cdtk_dir.glob("*pwd*.txt")) + list(cdtk_dir.glob("*pass*.txt"))
+                # 只提示，绝不自动读取：密码文件的内容等同于证书私钥口令，
+                # 任何"顺手读到就用"的行为都可能把无关凭据套到错误的证书上。
+                pwd_files = sorted(cdtk_dir.glob("*pwd*.txt")) + sorted(cdtk_dir.glob("*pass*.txt"))
                 if pwd_files:
-                    pwd_file = pwd_files[0]
-                    try:
-                        mode = pwd_file.stat().st_mode & 0o777
-                        if mode & 0o077:
-                            print(
-                                f"⚠️  证书密码文件权限过宽 ({oct(mode)}): {pwd_file}，建议 chmod 600",
-                                file=sys.stderr,
-                            )
-                        pwd = pwd_file.read_text(encoding="utf-8").strip()
-                    except Exception:
-                        pass
+                    print("ℹ️  发现疑似密码文件 %s（CDTK 不会自动读取）" % pwd_files[0], file=sys.stderr)
+                    print("   需要时请显式传入: --password \"$(cat %s)\" 或 export CDTK_SIGN_PASS=..."
+                          % pwd_files[0], file=sys.stderr)
 
     if p12 and not Path(p12).is_file():
         raise FileNotFoundError(f"指定的 P12 证书文件不存在: {p12}")

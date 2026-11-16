@@ -92,6 +92,12 @@ async def cmd_list(args):
 
 
 async def cmd_eval(args):
+    if not args.yes:
+        print(f"🛑 [安全阻断] 准备向 Web 页面 {args.page_id} 注入 JavaScript")
+        print("   警告：脚本以该页面自身权限执行，可读取/修改该站点的全部 Cookie 与存储。")
+        print("   此高危操作必须显式追加 -y / --yes 参数方可执行。")
+        return 1
+
     print(f"⚡ 正在连接 WebKit 页面 ID: \033[1;32m{args.page_id}\033[0m 准备注入 JavaScript...")
     async with CoreDeviceSession() as s:
         wi = WebinspectorService(s.rsd)
@@ -211,6 +217,8 @@ def main():
     p_eval = sub.add_parser("eval", help="向指定 Web 页面注入执行任意 JavaScript 脚本")
     p_eval.add_argument("page_id", help="目标页面的 ID（通过 `cdtk-inspect list` 获取）")
     p_eval.add_argument("script", help="要注入执行的 JavaScript 代码字符串")
+    p_eval.add_argument("-y", "--yes", action="store_true",
+                         help="确认执行注入（必填；脚本以页面自身权限运行，可读取该站全部凭据）")
     p_eval.set_defaults(func=cmd_eval)
 
     p_dump = sub.add_parser("dump", help="一键 Dump 目标页面的 Cookies、LocalStorage 与 SessionStorage")
