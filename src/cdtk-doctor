@@ -43,7 +43,11 @@ class Doctor:
         self.errors = []
         self.warnings = []
         self.host = os.environ.get("CDTK_RSD_HOST", "10.7.0.1")
-        self.port = int(os.environ.get("CDTK_RSD_PORT", "49152"))
+        raw_port = os.environ.get("CDTK_RSD_PORT", "49152")
+        try:
+            self.port = int(raw_port)
+        except ValueError:
+            self.port = 49152   # coredevice_session 导入时已提示过，这里静默回退
 
     def check_system_deps(self):
         sec = "1. Checking Base System Runtimes & Commands:" if not is_zh else "1. 检查基础系统运行时与命令依赖:"
@@ -56,9 +60,10 @@ class Doctor:
                 ver = subprocess.check_output(["node", "-v"], text=True).strip()
                 lbl = "Node.js Runtime" if not is_zh else "Node.js 运行时"
                 print(f"  {PASS} {lbl}: {node_path} ({ver})")
-            except Exception:
+            except Exception as e:
                 lbl = "Node.js Runtime" if not is_zh else "Node.js 运行时"
-                print(f"  {PASS} {lbl}: {node_path}")
+                print(f"  {WARN} {lbl}: {node_path}（执行 node -v 失败: {e}）")
+                self.warnings.append((lbl, f"node -v failed: {e}"))
         else:
             err = "Node.js runtime not found (required for TLS-PSK relay)" if not is_zh else "未检测到 Node.js 运行时 (TLS-PSK 桥接必需)"
             print(f"  {FAIL} {err}")
@@ -130,7 +135,7 @@ class Doctor:
             print(f"  {PASS} {lbl_f}: {p_file}")
             
             # Load with load_pairing which auto-handles external volume permission isolation
-            rec = load_pairing(p_file, isolate=False)
+            rec = load_pairing(p_file, isolate=True)
             actual_path = rec.get("path", p_file)
             st = os.stat(actual_path)
             perm_oct = oct(st.st_mode & 0o777)
@@ -452,6 +457,8 @@ def cleanup_stale_temp_dirs(max_age_s=86400):
                 if not os.path.isdir(path) or now - os.path.getmtime(path) <= max_age_s:
                     continue
                 pid_file = os.path.join(path, "pid")
+                if not os.path.exists(pid_file):
+                    continue        # 没有 pid = 可能正在启动，宁可留着
                 if os.path.exists(pid_file):
                     try:
                         with open(pid_file) as f:
@@ -491,9 +498,17 @@ async def main():
     return doc.print_summary()
 
 if __name__ == "__main__":
-    from coredevice_session import SessionBusyError
     try:
-        sys.exit(asyncio.run(main()))
-    except SessionBusyError as e:
-        print(f"\n  {FAIL} {e}")
-        sys.exit(3)
+        from coredevice_session import SessionBusyError
+        try:
+            sys.exit(asyncio.run(main()))
+        except SessionBusyError as e:
+            print(f"\n  {FAIL} {e}")
+            sys.exit(3)
+    except SystemExit:
+        raise
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except Exception as e:
+        print(f"❌ {e}", file=sys.stderr)
+        sys.exit(1)

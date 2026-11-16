@@ -16,10 +16,22 @@ from coredevice_session import CoreDeviceSession
 from pymobiledevice3.services.webinspector import WebinspectorService
 
 
-async def get_target_app_and_page(wi, page_id=None):
-    """查找并匹配指定的目标 Web 应用和页面"""
-    await wi.get_open_pages()
-    
+def parse_page_id(raw):
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        print(f"❌ page_id 必须是数字（用 cdtk-inspect list 查看）: {raw!r}", file=sys.stderr)
+        sys.exit(2)
+
+
+async def get_target_app_and_page(wi, page_id=None, tries=10, interval=0.2):
+    """查找并匹配指定的目标 Web 应用和页面（等设备上报，最多 tries 次）"""
+    for _ in range(tries):
+        await wi.get_open_pages()
+        if wi.connected_application:
+            break
+        await asyncio.sleep(interval)
+
     for app_id, app_obj in wi.connected_application.items():
         pages_map = wi.application_pages.get(app_id, {})
         if page_id is not None:
@@ -104,7 +116,7 @@ async def cmd_eval(args):
         await wi.connect()
         await asyncio.sleep(0.4)
         
-        app, page = await get_target_app_and_page(wi, page_id=args.page_id)
+        app, page = await get_target_app_and_page(wi, page_id=parse_page_id(args.page_id))
         if not app or not page:
             print(f"❌ 未找到页面 ID 为 {args.page_id} 的活跃 Web 容器！请先运行 `cdtk-inspect list` 查看可用页面。")
             return 1
@@ -127,6 +139,10 @@ async def cmd_eval(args):
 
 
 async def cmd_dump(args):
+    if not getattr(args, "yes", False):
+        print(f"🛑 [安全阻断] dump 会把目标页面的全部 Cookie / LocalStorage / SessionStorage "
+              f"明文打印到终端（可能被日志留存）。确认请加 -y。")
+        return 1
     print(f"⚡ 正在深度提取页面 ID: \033[1;32m{args.page_id}\033[0m 的存储凭据 (Cookies / LocalStorage)...")
     js_extract = """
     (() => {
@@ -157,13 +173,16 @@ async def cmd_dump(args):
         await wi.connect()
         await asyncio.sleep(0.4)
         
-        app, page = await get_target_app_and_page(wi, page_id=args.page_id)
+        app, page = await get_target_app_and_page(wi, page_id=parse_page_id(args.page_id))
         if not app or not page:
             print(f"❌ 未找到页面 ID 为 {args.page_id} 的活跃 Web 容器！")
             return 1
             
         session = await wi.inspector_session(app, page)
         data = await session.runtime_evaluate(js_extract, return_by_value=True)
+        if not isinstance(data, dict):
+            print(f"❌ 页面没有返回结构化结果（可能不是普通网页）: {data!r}")
+            return 1
         
         print("\n" + "═" * 70)
         print(f" 🔑 页面凭据与存储提取报告 (ID: {args.page_id})")
@@ -192,13 +211,18 @@ async def cmd_nav(args):
         await wi.connect()
         await asyncio.sleep(0.4)
         
-        app, page = await get_target_app_and_page(wi, page_id=args.page_id)
+        app, page = await get_target_app_and_page(wi, page_id=parse_page_id(args.page_id))
         if not app or not page:
             print(f"❌ 未找到页面 ID 为 {args.page_id} 的活跃 Web 容器！")
             return 1
             
         session = await wi.inspector_session(app, page)
-        await session.navigate_to_url(args.url)
+        if not str(args.url).lower().startswith(("http://", "https://")):
+            print("❌ 只接受 http/https URL", file=sys.stderr)
+            return 2
+        # 不能用 SDK 的 navigate_to_url：它内部 f-string 直拼 URL，引号会破坏 JS
+        await session.runtime_evaluate(
+            "window.location = " + json.dumps(args.url), return_by_value=True)
         print(f"🎉 指令已发送，页面正在导航至: {args.url}")
     return 0
 
@@ -223,6 +247,8 @@ def main():
 
     p_dump = sub.add_parser("dump", help="一键 Dump 目标页面的 Cookies、LocalStorage 与 SessionStorage")
     p_dump.add_argument("page_id", help="目标页面的 ID")
+    p_dump.add_argument("-y", "--yes", action="store_true",
+                        help="确认导出（内容为明文凭据，必需参数）")
     p_dump.set_defaults(func=cmd_dump)
 
     p_nav = sub.add_parser("nav", help="远程控制目标页面跳转至指定 URL")

@@ -35,14 +35,23 @@ def parse_and_print_crash(content: bytes, target_name: str):
 
     header = {}
     body = {}
+    parse_error = None
     try:
         if lines:
             header = json.loads(lines[0])
         body_text = "\n".join(lines[1:])
         if body_text.strip().startswith("{"):
             body = json.loads(body_text)
-    except Exception:
-        pass
+    except Exception as e:
+        parse_error = e
+
+    if not isinstance(header, dict) or (not header and not isinstance(body, dict)):
+        print("⚠️  这份日志不是标准的 IPS/JSON 格式，无法结构化解析；下面直接给出原文前 40 行。")
+        if parse_error:
+            print(f"   （解析错误: {parse_error}）")
+        for ln in lines[:40]:
+            print("   " + ln)
+        return
 
     print("\n" + "═" * 76)
     print(" 🔬 系统崩溃日志深度解析报告")
@@ -108,7 +117,8 @@ def parse_and_print_crash(content: bytes, target_name: str):
         frames = threads[crashed_idx].get("frames", [])
         used_images = body.get("usedImages", [])
         for f in frames[:15]:
-            sym = f.get("symbol") or f"0x{f.get('imageOffset', 0):x}"
+            off = f.get("imageOffset")
+            sym = f.get("symbol") or (f"0x{off:x}" if isinstance(off, int) else "???")
             img = f.get("imageName")
             if not img:
                 idx = f.get("imageIndex")
@@ -138,8 +148,8 @@ async def scan_all_crash_reports(cm: CrashReportsManager) -> list:
     seen_dirs = {"/"}
     try:
         root_entries = await cm.ls("/")
-    except Exception:
-        root_entries = []
+    except Exception as e:
+        raise RuntimeError("无法列出设备崩溃日志根目录（隧道或权限问题）: %s" % e)
     for e in root_entries:
         if ".ips" in e:
             continue
@@ -288,6 +298,13 @@ async def cmd_pull(args):
             print(f"📎 实际路径: {real_path}")
 
         os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+        if os.path.exists(out_path):
+            base, ext = os.path.splitext(out_path)
+            n = 1
+            while os.path.exists("%s.%d%s" % (base, n, ext)):
+                n += 1
+            out_path = "%s.%d%s" % (base, n, ext)
+            print(f"ℹ️  同名文件已存在，本次另存为: {out_path}")
         with open(out_path, "wb") as fp:
             fp.write(content)
 
@@ -306,14 +323,14 @@ async def cmd_latest(args):
             ips = [f for f in ips if args.app.lower() in f.lower()]
         if not ips:
             print("📭 未找到相关的最近崩溃日志。")
-            return
+            return 1
         target = ips[0]
         print(f"🎯 命中最新日志: {target}")
         try:
             real_path, content = await read_report_content(cm, target)
         except Exception as e:
             print(f"❌ 读取日志失败: {e}")
-            return
+            return 1
 
         parse_and_print_crash(content, real_path)
 

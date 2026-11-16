@@ -45,9 +45,12 @@ async def cmd_launch(args):
                 "--body", f"📌 当前步骤: {op_desc}（请先勿触碰屏幕，完成后会自动弹窗提醒切回）",
                 "--after", "0"
             ], capture_output=True, timeout=3)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"⚠️  操作横幅未发出（不影响执行）: {e}", file=sys.stderr)
 
+    if not getattr(args, "no_kill", False):
+        print("🔪 默认会先强制结束该 App 的现有实例（未保存状态会丢）；"
+              "要保留请加 --no-kill。")
     print(f"⚡ 正在通过 CoreDevice RSD 拉起应用: {args.bundle_id}...")
     async with CoreDeviceSession() as s:
         async with AppServiceService(s.rsd) as app_svc:
@@ -71,7 +74,7 @@ async def cmd_procs(args):
             count = 0
             for p in procs:
                 pid = p.get("processIdentifier")
-                url = p.get("executableURL", {}).get("relative", "")
+                url = (p.get("executableURL") or {}).get("relative") or ""
                 is_app = "/Applications/" in url or ".app/" in url
                 if args.apps_only and not is_app:
                     continue
@@ -135,7 +138,8 @@ async def resolve_points(rsd, args, points):
             size = screen_size(await info.get_display_info())
         return [to_hid(x, y, size) for x, y in points]
     except (ValueError, KeyError, TypeError) as e:
-        sys.exit(f"❌ {e}")
+        print(f"❌ {e}", file=sys.stderr)
+        sys.exit(2)
 
 async def _release_touch(hid, x, y, tsid):
     """释放触点：取消态下也要真正发完，返回是否成功。
@@ -146,6 +150,8 @@ async def _release_touch(hid, x, y, tsid):
     task = asyncio.ensure_future(
         hid.send_touchscreen(TOUCHSCREEN_STATE_RELEASE, x, y, service_id=tsid)
     )
+    deadline = time.monotonic() + 2.0
+    attempts = 0
     while True:
         try:
             await asyncio.shield(task)
@@ -153,16 +159,31 @@ async def _release_touch(hid, x, y, tsid):
         except asyncio.CancelledError:
             if task.done():
                 return not task.cancelled() and task.exception() is None
-            continue          # 释放没发完之前不放弃
+            attempts += 1
+            if attempts >= 3 or time.monotonic() > deadline:
+                print("⚠️  触点释放被反复取消，已放弃等待（设备可能停在按下状态）",
+                      file=sys.stderr)
+                return False
+            continue
         except Exception:
             return False
+
+def _resolve_service_id(args):
+    sid = getattr(args, "service_id", None)
+    if sid is None:
+        sid = DIGITIZER_SURFACE_MAIN_TOUCHSCREEN
+    if not (1 <= int(sid) <= 65535):
+        print(f"❌ --service-id 超出范围 1..65535: {sid}", file=sys.stderr)
+        sys.exit(2)
+    return int(sid)
+
 
 async def cmd_tap(args):
     print(f"⚡ 正在向物理屏幕注入真实硬件触控点击: ({args.x}, {args.y})...")
     async with CoreDeviceSession() as s:
         [(x, y)] = await resolve_points(s.rsd, args, [(args.x, args.y)])
         async with touch_session(s.rsd) as hid:
-            tsid = args.service_id or DIGITIZER_SURFACE_MAIN_TOUCHSCREEN
+            tsid = _resolve_service_id(args)
             try:
                 await hid.send_touchscreen(TOUCHSCREEN_STATE_CONTACT, x, y, service_id=tsid)
                 await asyncio.sleep(0.06)
@@ -179,7 +200,7 @@ async def cmd_swipe(args):
     async with CoreDeviceSession() as s:
         (x1, y1), (x2, y2) = await resolve_points(s.rsd, args, [(args.x1, args.y1), (args.x2, args.y2)])
         async with touch_session(s.rsd) as hid:
-            tsid = args.service_id or DIGITIZER_SURFACE_MAIN_TOUCHSCREEN
+            tsid = _resolve_service_id(args)
             steps = max(args.steps, 5)
             duration = max(args.duration, 0.05)
             interval = duration / steps
