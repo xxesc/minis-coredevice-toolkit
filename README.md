@@ -81,6 +81,7 @@ validates the host signature. Failures come with the command to fix them. The de
 | `cdtk-doctor`      | Env audit, sweep old dirs    |
 | `cdtk-install`     | List / install / remove apps |
 | `cdtk-ctrl`        | Processes, launch, touch     |
+| `cdtk-ui`          | Read the UI: element tree, OCR targeting, tap by text |
 | `cdtk-notify`      | System banners (Minis only)  |
 | `cdtk-profile`     | Profiles: list / add / del   |
 | `cdtk-fs`          | App container, media         |
@@ -122,6 +123,63 @@ app. The `Pairing identifier` line printed by `cdtk-doctor` is the pairing recor
 default — it is not the device UDID.
 Known limit: `-b` / `-n` only apply when the IPA is actually re-signed; on an already-signed IPA without `-s` they are
 silently ignored.
+
+---
+
+## Reading and driving the UI (cdtk-ui)
+
+`cdtk-ctrl` can only tap coordinates; it has no idea what is on screen. `cdtk-ui` adds that
+layer: screenshot + OCR gives you "which text is where", and the text is mapped back to
+coordinates you can tap.
+
+```bash
+cdtk-ui tree                              # focusable elements (accessibility labels)
+cdtk-ui tree --app minis                   # target a specific app (defaults to the last one used)
+cdtk-ui find "Add attachment"              # look up an element by text
+cdtk-ui press "Send"                       # tap by text; reports whether the screen changed
+cdtk-ui press "some old message" --scroll 4  # not on screen? scroll and search
+cdtk-ui press --at 1042,173                # icon-only buttons: coordinates are the only way
+cdtk-ui grid                               # screenshot with a labelled coordinate grid
+cdtk-ui paste "text with spaces" --allow    # clipboard path, the reliable one
+cdtk-ui input "abc"                        # plain ASCII token; read back and verified
+```
+
+**Targeting is OCR-first, element tree second.** The element tree is scroll-dependent and
+incomplete: SwiftUI virtualises, so off-screen elements are simply absent (measured 267
+elements on one screen, 21 on another). OCR only sees the visible area, which is exactly
+the question that matters — if you can see it, you can tap it. The tree is therefore
+demoted to a diagnostic hint when the text is not found.
+
+**Pass `--app` explicitly.** The audit daemon remembers the last target process on the device,
+so after switching apps a plain `tree` keeps returning the *previous* app's elements — wrong
+data with no error at all. `--app` accepts a bundle id or a name fragment (`safari`,
+`MobileSafari`, `com.openminis.app`). Matching prefers `*.app/<same-named executable>` and
+skips `.appex` / `PlugIns` / `.xpc`; Safari alone has `MobileSafari` plus `SafariWebExtension`
+and several helpers, and without that preference you bind to an extension and get zero
+elements. Note that apps like Safari keep their content in a WebContent process, so the
+element tree is nearly empty there by design — use OCR (`press` / `grid`) for those.
+
+`press` also judges the result: capture a baseline frame, inject the touch, then grab a burst
+of video-stream frames and compare. It reports whether the screen changed, by how much, and
+whether it has settled. The algorithm is ported from iCTRL's ScreenSettle (36x78 coarse grid
+to absorb noise, status bar rows skipped, thresholds separating "no reaction / moving / settled").
+
+### Known limits
+
+* **Icon-only buttons cannot be targeted** (back, more options, copy, send) — no text on
+  screen, so OCR finds nothing. Use `cdtk-ui grid` to measure and `press --at X,Y`.
+* **Do not use `input` for text containing spaces.** With a Chinese pinyin IME active, the
+  space is consumed as "confirm candidate" (`minis skills` becomes `minisskills`), and letters
+  that form valid pinyin are converted to Han characters (`aa bb cc` becomes `嗷嗷宝宝 cc`).
+  Tokens like `openmins` survive only because they are not valid pinyin — which is exactly
+  what makes this bug so easy to miss. `input` now reads the screen back and warns, but
+  `paste` is the reliable path.
+* **`input --submit` may not submit** — the Return key is swallowed the same way. cdtk-ui
+  detects this and tells you; the dependable route is `cdtk-ui press "Go"`.
+* **Floating buttons can overlay an input field or address bar** (iOS 26 Safari is one), so an
+  OCR coordinate may land on the overlay. Screenshot before interacting.
+* Element coordinates are not exposed (`Frame` / `AXFrame` / `AXPosition` all return `None`),
+  so `perform_press` is unusable — which is why tapping has to go back through coordinates.
 
 ---
 

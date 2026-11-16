@@ -76,6 +76,7 @@ cdtk-doctor          # 中文输出加 --zh
 | `cdtk-doctor`      | 环境体检，清残留目录     |
 | `cdtk-install`     | 列应用、装 / 卸 IPA      |
 | `cdtk-ctrl`        | 进程、拉起 App、触控     |
+| `cdtk-ui`          | 读界面：元素树、OCR 定位、按文字点 |
 | `cdtk-notify`      | 推送系统横幅（仅 Minis） |
 | `cdtk-profile`     | 描述文件：列 / 装 / 删   |
 | `cdtk-fs`          | 读沙盒、媒体             |
@@ -113,6 +114,58 @@ cdtk-profile list
 文档里的示例值都是占位符：`com.example.demo` 只是格式演示，与任何真实应用无关。`cdtk-doctor` 里那行 `配对标识` 打印的是配对记录的
 `identifier`（UUID），默认已打码，不是设备 UDID。
 已知限制：`-b` / `-n` 只在真正签名时生效；已经带签名的 IPA 不给 `-s` 会被静默忽略。
+
+---
+
+## 界面读写（cdtk-ui）
+
+`cdtk-ctrl` 只会「按坐标点」，它不知道屏幕上有什么。`cdtk-ui` 补上这一层：
+截图 + OCR 得到「屏幕上有哪些字、各在什么位置」，再把文字映射回坐标去点。
+
+```bash
+cdtk-ui tree                              # 可聚焦元素（无障碍标签）
+cdtk-ui tree --app minis                   # 指定目标 App（不给就沿用上次那个）
+cdtk-ui find "添加附件"                    # 按文本查元素
+cdtk-ui press "发送"                       # 按文字点；点完报告界面有没有动
+cdtk-ui press "某条历史消息" --scroll 4     # 当前屏没有就滚动搜索
+cdtk-ui press --at 1042,173                # 纯图标按钮只能给坐标
+cdtk-ui grid                               # 截图叠坐标网格，方便量 --at
+cdtk-ui paste "中文或含空格的内容" --allow   # 走剪贴板，最稳
+cdtk-ui input "abc"                        # 纯 ASCII 单词；打完会回读校验
+```
+
+**定位以 OCR 为主，元素树为辅。** 元素树是滚动相关而且不完整的——SwiftUI 会虚拟化，
+不在视野内的元素根本不在树里（同一屏实测有时 267 个、有时只有 21 个）。
+而 OCR 只看可见区域，恰好等于「能不能点」的判据：看得见才点得到。
+元素树因此降级为「找不到时的诊断信息」。
+
+**`--app` 建议显式给。** 审计 daemon 会在设备上记住上一次设的目标进程，
+切到别的 App 之后不给 `--app`，读到的仍是**上一个 App 的元素**——读错应用却完全不报错。
+`--app` 接受 bundle id 或名称片段（`safari`、`MobileSafari`、`com.openminis.app`）。
+匹配时优先 `*.app/<同名可执行文件>`，避开 `.appex` / `PlugIns` / `.xpc`——
+Safari 就有 `MobileSafari` 本体和 `SafariWebExtension` 好几个同名进程，
+不区分的话会绑到扩展进程上去，结果读到 0 个元素。
+另外 Safari 这类把内容放在 WebContent 进程里的 App，元素树本来就近乎为空，
+读界面请依赖 OCR（`press` / `grid`）而不是元素树。
+
+`press` 点完会顺带判定界面：取点击前的基线帧 → 注入触摸 → 连抓一段视频流帧比对，
+报告「屏幕有没有变 / 变了多少 / 动完没有」。这套判定移植自 iCTRL 的 ScreenSettle
+（36×78 粗网格吸收噪声，跳过状态栏那几行，阈值区分「没反应 / 在动 / 动完了」）。
+
+### 已知边界
+
+* **纯图标按钮点不了**（返回、更多选项、拷贝、发送）——屏幕没有文字，OCR 定位不到。
+  用 `cdtk-ui grid` 量出坐标再 `press --at X,Y`。
+* **含空格的 ASCII 不要用 `input`**。键盘处于中文拼音态时，空格会被当成「确认候选词」
+  吃掉（`minis skills` → `minisskills`），能拼成拼音的字母还会被转成汉字
+  （`aa bb cc` → `嗷嗷宝宝 cc`）。而 `openmins` 这种非法拼音反而原样保留，
+  所以「有时候能打对」最容易骗过人。`input` 打完会回读校验并报警，但更稳的是 `paste`。
+* **`input --submit` 的回车不一定能提交**——中文输入法下回车同样被吞。
+  工具会检测并在界面没变时提示，可靠做法是 `cdtk-ui press "前往"`。
+* **有的 App 悬浮按钮压在输入框/地址栏上**（iOS 26 Safari 就是一例），
+  OCR 给出的坐标可能落在浮层上。交互前先截图确认。
+* 元素坐标拿不到（`Frame` / `AXFrame` / `AXPosition` 全部返回 `None`），
+  所以 `perform_press` 用不了——这也是为什么点击必须绕回坐标。
 
 ---
 

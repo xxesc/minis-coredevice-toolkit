@@ -89,11 +89,14 @@ PY
 echo "📁 安装核心库到 $SP_DIR"
 cp -f "$SCRIPT_DIR/coredevice_session.py" "$SP_DIR/"
 cp -f "$SCRIPT_DIR/tls_psk_proxy.js" "$SP_DIR/"
+# cdtk-ui 的 UI 判定模块：settle（点完判断界面有没有动）与 frames（视频流取帧）
+cp -f "$SCRIPT_DIR/cdtk_settle.py" "$SP_DIR/"
+cp -f "$SCRIPT_DIR/cdtk_frames.py" "$SP_DIR/"
 
 # 6. 注册 CLI。
 echo "🔧 注册全局 CLI 命令 (cdtk-*)..."
 mkdir -p /usr/local/bin
-for tool in cdtk-install cdtk-ctrl cdtk-profile cdtk-fs cdtk-diag cdtk-crash cdtk-inspect cdtk-springboard cdtk-proc cdtk-doctor cdtk-notify; do
+for tool in cdtk-install cdtk-ctrl cdtk-ui cdtk-profile cdtk-fs cdtk-diag cdtk-crash cdtk-inspect cdtk-springboard cdtk-proc cdtk-doctor cdtk-notify; do
   if [ -f "$SCRIPT_DIR/$tool" ]; then
     chmod +x "$SCRIPT_DIR/$tool"
     if [ "$LINK_MODE" -eq 1 ]; then
@@ -113,3 +116,4 @@ mkdir -p /root/.cdtk/pairing 2>/dev/null && chmod 700 /root/.cdtk/pairing 2>/dev
 echo "   2. 将 pairing record 放入 /root/.cdtk/pairing/（chmod 600；共享目录不推荐）"
 command -v apple-notification >/dev/null || echo "   ℹ️ cdtk-notify 需要 Minis 的 apple-notification，本机未找到"
 echo "   3. 运行 cdtk-doctor 体检"
+echo "   4. cdtk-ui（界面读写）额外需要 apple-vision（Minis 自带）用于 OCR 定位"

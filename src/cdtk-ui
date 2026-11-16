@@ -1,0 +1,1043 @@
+#!/usr/bin/env python3
+"""
+cdtk-ui: 用 CoreDevice 原生通道读写 iPhone 界面（不依赖 iCTRL / XCUITest）
+
+能力来源：
+  * 元素树  — RSD 上的 com.apple.accessibility.axAuditDaemon.remoteserver.shim.remote
+              经焦点遍历拿到前台 App 的可聚焦元素与其无障碍标签（caption）
+  * 截图    — com.apple.coredevice.screencaptureservice
+  * 坐标    — 截图 + apple-vision OCR，把元素标签映射到屏幕像素坐标
+  * 点击    — cdtk-ctrl tap（dtuhidd 硬件级注入）
+
+为什么不用 perform_press：它要求调用方进程带 task_for_pid-allow entitlement，
+宿主没有这个权限，调用不会报错但也不生效（2026-11-15 实测：调用成功、界面无变化）。
+所以点击一律走「OCR 定位 + 硬件 tap」。
+
+已知边界（2026-11-15 实测）：
+  * 元素树能读到真实 caption（Minis/Telegram 都验过），但读不到坐标 ——
+    Frame / AXFrame / AXPosition / AXSize 全部返回 None，设备不暴露。
+  * press 只能操作「屏幕上有可见文字」的控件：纯图标按钮（返回、更多选项、
+    拷贝、发送）屏幕无文字，OCR 定位不到，会拒绝执行。
+  * Apple Vision 的 bbox 原点在左下角、y 轴向上，换算屏幕坐标必须翻转 Y，
+    否则每个点都纵向上下一翻（这个坑踩过，症状是"点了完全不相干的位置"）。
+  * 输入框往往是个 caption 为空的元素、placeholder 又是灰字 OCR 读不到，
+    所以 input/paste 用「上下文状态行」或底部按钮夹出的区间定位，
+    实在不行用 --at 手动给坐标。
+"""
+
+import argparse
+import asyncio
+import json
+import os
+import subprocess
+import sys
+
+# 辅助模块（cdtk_settle / cdtk_frames）与脚本同目录，或已装进 site-packages。
+# 用 realpath 而不是 __file__：通过 /usr/local/bin 符号链接调用时，
+# __file__ 指向链接本身，realpath 才能定位到真正的库目录。
+_HERE = os.path.dirname(os.path.realpath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+import tempfile
+import time
+
+from coredevice_session import CoreDeviceSession
+from pymobiledevice3.remote.core_device.screen_capture_service import ScreenCaptureService
+from pymobiledevice3.services.accessibilityaudit import AccessibilityAudit, deserialize_object
+
+
+# ---------- 元素树 ----------
+
+async def _resolve_target_pid(rsd, app=None):
+    """把 --app 解析成进程 PID；不给 --app 就返回 None（沿用 daemon 当前目标）。
+
+    为什么必须指定 PID：审计 daemon 会在设备上记住上一次设的目标进程。
+    实测切到 Safari 之后不指定 PID，读到的仍是上一个 App 的元素——
+    也就是「读错应用但毫无报错」，比读不到更危险。
+
+    参数必须用当前会话查，不能起子进程：早期版本这里 subprocess 调
+    `cdtk-ctrl procs`，而它要拿同一把 flock，于是自己等自己，卡满 120 秒。
+    """
+    if not app:
+        return None
+    try:
+        from pymobiledevice3.remote.core_device.app_service import AppServiceService
+        async with AppServiceService(rsd) as app_svc:
+            procs = await app_svc.list_processes() or []
+        # 同名进程常常有好几个（Safari 就有 MobileSafari 本体 +
+        # SafariWebExtension + 几个 xpc 服务），取第一个会读到 0 个元素。
+        # 优先「*.app/<同名可执行文件>」，排除 .appex / PlugIns / .xpc。
+        needle = app.lower()
+        best, best_score = None, 9
+        for p in procs:
+            url = (p.get("executableURL") or {}).get("relative", "")
+            low = url.lower()
+            if needle not in low:
+                continue
+            stem = url.rsplit("/", 1)[-1].lower()
+            score = 9
+            if ".app/" in low and ".appex" not in low and "plugins/" not in low:
+                score = 0 if stem == needle else 1
+            elif ".appex" in low or "plugins/" in low:
+                score = 5
+            if score < best_score or (score == best_score and
+                                      best is not None and len(url) < len(best[1])):
+                best, best_score = (p.get("processIdentifier"), url), score
+        return best[0] if best else None
+    except Exception:
+        pass
+    return None
+
+
+async def collect_elements(ax, limit=400, budget=25.0, want=None, want_mode="smart", app=None):
+    """遍历前台 App 可聚焦元素，返回 [(caption, element_bytes)]。
+
+    budget: 总时间上限（秒）。大界面（几百个元素）逐个等焦点事件很慢，
+    没有预算会跑出几分钟；到达上限就返回已收集到的部分。
+
+    注意「推送后重新读」这个结构：连上后队列里会先有几个非焦点通知
+    （hostInspectorMonitoredEventTypeChanged 之类），跳过它们之后必须再推一次焦点，
+    否则焦点不动、事件永远不来（踩过：整轮返回 0 个元素）。
+    """
+    import time as _t
+    deadline = _t.monotonic() + budget
+
+    # 顺序很重要，错了就一个焦点事件都没有：
+    #   1) deviceInspectorEnable: 1   ← 必须先开 inspector
+    #   2) deviceSetAuditTargetPid: <宿主 PID>
+    # 2026-11-16 实测：只 setPid 不开 inspector → 12 秒内 0 个焦点事件；
+    # 先 enable 再 setPid → 立刻拿到「工具, 按钮」「今天, 静态文本」。
+    try:
+        await ax._invoke("deviceInspectorEnable:", 1, expects_reply=False)
+        await asyncio.sleep(0.4)
+        pid = await _resolve_target_pid(ax._lockdown, app)
+        if pid:
+            await ax._invoke("deviceSetAuditTargetPid:", pid, expects_reply=False)
+            await asyncio.sleep(0.4)
+    except Exception:
+        pass
+
+    await ax.set_app_monitoring_enabled(True)
+    await ax.set_monitored_event_type()
+
+    out, seen = [], set()
+    empty_rounds = 0
+    while _t.monotonic() < deadline and len(out) < limit:
+        await ax.move_focus_next()
+        got = None
+        t_end = _t.monotonic() + 1.2
+        while _t.monotonic() < t_end:
+            try:
+                name, args = await asyncio.wait_for(
+                    ax._event_queue.get(), timeout=max(0.05, t_end - _t.monotonic()))
+            except asyncio.TimeoutError:
+                break
+            if name != "hostInspectorCurrentElementChanged:":
+                continue                    # 其它通知，吞掉继续等本轮焦点事件
+            payload = ax._extract_event_payload(args)
+            if not payload:
+                continue
+            data = deserialize_object(payload)
+            if isinstance(data, list):
+                if not data:
+                    continue
+                data = data[0]
+            got = data
+            break
+
+        if got is None:
+            empty_rounds += 1
+            if empty_rounds >= 3:
+                break
+            continue
+        empty_rounds = 0
+
+        uid = got.platform_identifier
+        if uid in seen:
+            break                            # 转了一圈，收工
+        seen.add(uid)
+        elem = got.element
+        cap = got.caption or ""
+        out.append((cap, elem.identifier if elem else None))
+        if want and match(cap, want, want_mode):
+            break                       # 命中即停，不必走完整棵树
+    return out
+
+
+def label_of(caption):
+    """caption 形如 '发送, 按钮, 图像' → '发送'。"""
+    return caption.split(",")[0].strip() if caption else ""
+
+
+def match(caption, needle, mode):
+    if not caption:
+        return False
+    parts = [p.strip() for p in caption.split(",")]
+    head = parts[0]
+    if mode == "exact":
+        return needle in parts
+    if mode == "contains":
+        return needle in caption
+    return needle == head or needle in parts
+
+
+# ---------- 截图 + OCR 定位 ----------
+
+async def screenshot_and_ocr_on(rsd):
+    """在已打开的 RSD 会话上截图并 OCR（避免 self-deadlock）。
+
+    与 screenshot_and_ocr 的区别：不自己开 CoreDeviceSession。
+    """
+    fd, path = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    try:
+        async with ScreenCaptureService(rsd) as svc:
+            r = await svc.capture_screenshot()
+        data = r["image"]
+        if isinstance(data, str):
+            import base64
+            data = base64.b64decode(data)
+        with open(path, "wb") as f:
+            f.write(data)
+        return _ocr_file(path)
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _ocr_file(path):
+    out = subprocess.run(
+        ["apple-vision", "ocr", path, "--lang", "zh-Hans,en", "--compact"],
+        capture_output=True, text=True, timeout=120,
+    )
+    if out.returncode != 0:
+        raise RuntimeError(f"apple-vision 失败: {out.stderr[:200]}")
+    info = json.loads(out.stdout).get("data", {})
+    W = info.get("image", {}).get("width") or 1170
+    H = info.get("image", {}).get("height") or 2532
+    items = []
+    for b in info.get("blocks", []):
+        bbox = b.get("bbox") or []
+        if len(bbox) != 4:
+            continue
+        x, y, w, h = bbox
+        # Vision bbox 原点在左下，屏幕在左上 → 翻转 Y
+        items.append((b.get("text", ""), (x + w / 2) * W, (1.0 - (y + h / 2)) * H))
+    return items, (W, H)
+
+
+async def screenshot_and_ocr():
+    """截当前屏并 OCR，返回 [(text, cx, cy)]，坐标为像素（竖屏原生）。"""
+    fd, path = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    try:
+        async with CoreDeviceSession() as s:
+            async with ScreenCaptureService(s.rsd) as svc:
+                r = await svc.capture_screenshot()
+        data = r["image"]
+        if isinstance(data, str):
+            import base64
+            data = base64.b64decode(data)
+        with open(path, "wb") as f:
+            f.write(data)
+
+        out = subprocess.run(
+            ["apple-vision", "ocr", path, "--lang", "zh-Hans,en", "--compact"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if out.returncode != 0:
+            raise RuntimeError(f"apple-vision 失败: {out.stderr[:200]}")
+        payload = json.loads(out.stdout)
+        info = payload.get("data", {})
+        blocks = info.get("blocks", [])
+        img = info.get("image", {})
+        W = img.get("width")
+        H = img.get("height")
+        if not W or not H:
+            # 兜底：用已知机型分辨率
+            W, H = 1170, 2532
+        items = []
+        for b in blocks:
+            bbox = b.get("bbox") or []
+            if len(bbox) != 4:
+                continue
+            x, y, w, h = bbox
+            # Apple Vision 的 bbox 原点在左下角，y 轴向上；
+            # 屏幕坐标原点在左上角，所以要翻转：cy = (1 - (y + h/2)) * H
+            cx = (x + w / 2) * W
+            cy = (1.0 - (y + h / 2)) * H
+            items.append((b.get("text", ""), cx, cy))
+        return items, (W, H)
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _norm(s):
+    """归一化：去掉所有空白与常见分隔符，统一大小写。
+
+    OCR 与无障碍标签的排版差异很大——同一个元素
+    标签是 `已执行 6 个工具, 1m 4s`，OCR 读成 `已执行5个工具•2m 26s`（无空格、逗号变圆点）。
+    不做归一化，带空格的标签永远匹配不上。
+    """
+    out = []
+    for ch in s:
+        if ch.isspace():
+            continue
+        if ch in ",，、•·・|:：;；-—–":
+            continue
+        out.append(ch.lower())
+    return "".join(out)
+
+
+def find_coord(items, needle):
+    """在 OCR 结果里找最匹配的文本块，返回 (text, cx, cy) 或 None。
+
+    四级策略，从严到宽：原文相等 → 归一化相等 → 归一化包含 → 反向包含。
+    """
+    # 1. 原文完全相等
+    for t, cx, cy in items:
+        if t.strip() == needle:
+            return t, cx, cy
+
+    nn = _norm(needle)
+    if not nn:
+        return None
+
+    # 状态栏（时间、电量、信号）不参与匹配：搜「现在跑真实press」时
+    # OCR 会读到实时活动浮层的「现在」，位置 y≈239，点下去毫无意义。
+    items = [(t, cx, cy) for t, cx, cy in items if cy > 130]
+
+    # 2. 归一化相等
+    for t, cx, cy in items:
+        if _norm(t) == nn:
+            return t, cx, cy
+
+    # 3. 模糊：双向包含，按「长度最接近目标」取。
+    #    不能简单取最短——OCR 会把长句拆成多块，搜「看当前屏幕可见文本」时
+    #    有一块就叫「文本」，取最短就点到了段落中间（实测 (502,979) 偏差很大）。
+    #    也不能取最长——可能是把好几行粘成的一大段。
+    #    按长度差排序才两个都躲开；差值相同时优先「OCR 块比目标长」（更完整）。
+    #
+    #    但还要挡住「只匹配上目标的零头」：搜「现在跑真实press」时 OCR 只有
+    #    一块叫「现在」，覆盖率 13%，结果点到了状态栏的「现在」。所以要求
+    #    碎片长度至少占目标的 FRAG_MIN 比例。
+    FRAG_MIN = 0.62
+    cands = []
+    for t, cx, cy in items:
+        nt = _norm(t)
+        if not nt or len(nt) < 2:
+            continue
+        if nn in nt:
+            cands.append((abs(len(nt) - len(nn)), 0, len(nt), t, cx, cy))
+        elif nt in nn and len(nt) >= 3 and len(nt) >= len(nn) * FRAG_MIN:
+            cands.append((abs(len(nt) - len(nn)), 1, -len(nt), t, cx, cy))
+    if cands:
+        cands.sort(key=lambda x: x[:3])
+        _, _, _, t, cx, cy = cands[0]
+        return t, cx, cy
+    return None
+
+
+
+
+# ---------- 键盘干扰 ----------
+
+# iOS 键盘上的标志性按键文字。底部区域同时出现多个，就基本可以断定键盘弹着。
+_KB_WORDS = ("空格", "换行", "重输", "符号", "中英", "123", "ABC", "DEF",
+             "GHI", "JKL", "MNO", "PQRS", "TUV", "WXYZ", "return", "space")
+
+
+def keyboard_up(items, H):
+    """判断键盘是否弹着（会挡住屏幕下半部分，让所有滑动失效）。"""
+    low = [t for t, _cx, cy in items if cy > H * 0.55]
+    hits = sum(1 for w in _KB_WORDS if any(w in t for t in low))
+    return hits >= 3
+
+
+async def dismiss_keyboard(rsd):
+    """收键盘。
+
+    优先发 ESC（HID 键盘 0x29）：iOS 对硬件键盘的 ESC 就是收起键盘。
+    退而求其次点键盘右下角的收起按钮——但那个位置随键盘布局变，不可靠。
+
+    为什么非收不可：键盘占掉屏幕下半部分后，滑动的起点全落在键盘上，
+    手势被键盘吃掉，屏幕纹丝不动——实测连滑 6 次内容完全一样，
+    而当时误判成「滚动没生效」。
+    """
+    from pymobiledevice3.remote.core_device.hid_service import (
+        touch_session, build_keyboard_report,
+    )
+    try:
+        async with touch_session(rsd) as svc:
+            kb = svc.create_keyboard_service()
+            await kb.send_report(kb, build_keyboard_report([0x29]))  # ESC 按下
+            await asyncio.sleep(0.05)
+            await kb.send_report(kb, build_keyboard_report([]))       # 松开
+        await asyncio.sleep(0.5)
+        return True
+    except Exception:
+        return False
+
+
+
+# ---------- 坐标网格（给 --at 取坐标用） ----------
+
+async def cmd_grid(args):
+    """截图并叠加坐标网格，方便给 --at 量位置。
+
+    纯图标按钮（返回/更多选项/拷贝/发送）屏幕无文字，OCR 定位不到，
+    只能靠 --at 手给坐标。肉眼估坐标很不准，这里把网格画上去：
+    图上每条线都标了像素值，看一眼就能读出按钮中心在哪。
+    """
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        print("需要 Pillow：apk add py3-pillow", file=sys.stderr)
+        return 1
+
+    items, (W, H) = await screenshot_and_ocr()
+    async with CoreDeviceSession() as s:
+        async with ScreenCaptureService(s.rsd) as svc:
+            r = await svc.capture_screenshot()
+    data = r["image"]
+    if isinstance(data, str):
+        import base64
+        data = base64.b64decode(data)
+    fd, src = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    with open(src, "wb") as f:
+        f.write(data)
+
+    step = args.step or 100
+    try:
+        im = Image.open(src).convert("RGB")
+        d = ImageDraw.Draw(im)
+        for x in range(0, im.width, step):
+            d.line([(x, 0), (x, im.height)], fill=(255, 0, 0), width=1)
+            d.text((x + 3, 4), str(x), fill=(255, 0, 0))
+            d.text((x + 3, im.height - 16), str(x), fill=(255, 0, 0))
+        for y in range(0, im.height, step):
+            d.line([(0, y), (im.width, y)], fill=(0, 120, 255), width=1)
+            d.text((3, y + 2), str(y), fill=(0, 120, 255))
+            d.text((im.width - 52, y + 2), str(y), fill=(0, 120, 255))
+        out = args.out or "cdtk_grid.png"
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        im.save(out)
+    finally:
+        try:
+            os.unlink(src)
+        except OSError:
+            pass
+
+    print(f"网格图已保存: {out}  (原图 {W}x{H}, 步长 {step}px)")
+    print("红竖线标 X，蓝横线标 Y。读出按钮中心后：")
+    print(f"  cdtk-ui press --at X,Y")
+    return 0
+
+# ---------- 滚动搜索 ----------
+
+async def _swipe_v(svc, older=True, steps=12, x=585):
+    """竖直滑动，看更早或更新的内容。
+
+    方向语义（实测确认，别再搞反）：
+      * 手指**下移**（y 750 → 1900）= 内容向下走 = 看**更早/更上面**的内容
+      * 手指**上移**（y 1900 → 750）= 内容向上走 = 看**更新/更下面**的内容
+    我一开始把这两个写反了，于是想往历史里找时实际一直在往最新的方向滚，
+    在最底部全是橡皮筋回弹 —— 表现是「连滑 6 次，顶部底部文字一模一样」，
+    而截图 hash 每次都变（其实只是状态栏时间和动画在变），极具迷惑性。
+
+    起止点必须避开：底部输入栏（约 y>2100，手势会被输入框吞）、
+    状态栏（y<300）。
+    """
+    from pymobiledevice3.remote.core_device.hid_service import (
+        TOUCHSCREEN_STATE_CONTACT, TOUCHSCREEN_STATE_RELEASE,
+    )
+    W, H = 1170, 2532
+    a, b = (750, 1900) if older else (1900, 750)
+    hx = int(x / W * 65535)
+    await svc.send_touchscreen(TOUCHSCREEN_STATE_CONTACT, hx, int(a / H * 65535))
+    for i in range(1, steps + 1):
+        y = a + (b - a) * i / steps
+        await svc.send_touchscreen(TOUCHSCREEN_STATE_CONTACT, hx, int(y / H * 65535))
+        await asyncio.sleep(0.012)
+    await svc.send_touchscreen(TOUCHSCREEN_STATE_RELEASE, hx, int(b / H * 65535))
+    await asyncio.sleep(0.55)   # 等滚动惯性停下，否则截图是糊的/错位的
+
+
+async def find_with_scroll(needle, max_down=4, max_up=8, log=print):
+    """在当前屏找不到就滚动搜索。
+
+    返回 (text, cx, cy, scrolls, W, H)，找不到返回 None。
+    方向策略：先向下找 max_down 次（内容通常在下方），再向上找 max_up 次。
+    全部在**一个会话**里完成 —— 跨会话建隧道要 10s+，而且截图和触摸
+    本来就该复用同一条设备连接。
+    """
+    from pymobiledevice3.remote.core_device.hid_service import touch_session
+
+    async with CoreDeviceSession() as s:
+        items, (W, H) = await screenshot_and_ocr_on(s.rsd)
+        hit = find_coord(items, needle)
+        if hit:
+            return hit + (0, W, H)
+
+        # 键盘弹着的话，先收掉，否则下面的滑动全部无效
+        if keyboard_up(items, H):
+            log("检测到键盘弹出，先收起（否则滑动会被键盘吃掉）")
+            await dismiss_keyboard(s.rsd)
+            await asyncio.sleep(0.4)
+
+        async with touch_session(s.rsd) as svc:
+            # 先往「更早」（历史）找
+            for i in range(1, max_down + 1):
+                await _swipe_v(svc, older=True)
+                items, (W, H) = await screenshot_and_ocr_on(s.rsd)
+                hit = find_coord(items, needle)
+                if hit:
+                    log(f"往更早滚 {i} 次后找到")
+                    return hit + (i, W, H)
+            # 再回头往「更新」找（多滚一倍，覆盖两个方向）
+            for i in range(1, max_down + max_up + 1):
+                await _swipe_v(svc, older=False)
+                items, (W, H) = await screenshot_and_ocr_on(s.rsd)
+                hit = find_coord(items, needle)
+                if hit:
+                    log(f"往更新滚 {i} 次后找到")
+                    return hit + (i, W, H)
+    return None
+
+
+# ---------- HID 键盘 ----------
+
+# HID Keyboard usage codes（USB HID Usage Tables, Keyboard/Keypad page）
+_SPECIAL = {
+    " ": 0x2C, "\n": 0x28, "\t": 0x2B, "-": 0x2D, "_": 0x2D, "=": 0x2E, "+": 0x2E,
+    "[": 0x2F, "{": 0x2F, "]": 0x30, "}": 0x30, "\\": 0x31, "|": 0x31,
+    ";": 0x33, ":": 0x33, "'": 0x34, '"': 0x34, "`": 0x35, "~": 0x35,
+    ",": 0x36, "<": 0x36, ".": 0x37, ">": 0x37, "/": 0x38, "?": 0x38, "!": 0x1E,
+    "@": 0x1F, "#": 0x20, "$": 0x21, "%": 0x22, "^": 0x23, "&": 0x24, "*": 0x25,
+    "(": 0x26, ")": 0x27,
+}
+_SHIFTED = set('_+{}|:"~<>?!@#$%^&*()')
+
+KEY_ENTER = 0x28
+KEY_DELETE = 0x2A   # backspace
+
+
+def build_kbd(usages):
+    """构造一个键盘 HID report（内部包一层，省去到处 import）。"""
+    from pymobiledevice3.remote.core_device.hid_service import build_keyboard_report
+    return build_keyboard_report(usages)
+
+
+def char_usage(ch):
+    """字符 → (usage, 是否需要 Shift)。不支持的字符返回 (None, False)。"""
+    if ch in _SPECIAL:
+        return _SPECIAL[ch], ch in _SHIFTED
+    if "a" <= ch <= "z":
+        return 0x04 + (ord(ch) - ord("a")), False
+    if "A" <= ch <= "Z":
+        return 0x04 + (ord(ch) - ord("A")), True
+    if "1" <= ch <= "9":
+        return 0x1E + (ord(ch) - ord("1")), False
+    if ch == "0":
+        return 0x27, False
+    return None, False
+
+
+def typeable(text):
+    """检查文本能否用 HID 键盘打出（纯 ASCII 可打印字符）。"""
+    bad = [c for c in text if char_usage(c)[0] is None]
+    return (not bad), bad
+
+
+async def hid_type(svc, kb, text, delay=0.04):
+    """用虚拟键盘逐字符输入 ASCII 文本。"""
+    from pymobiledevice3.remote.core_device.hid_service import (
+        build_keyboard_report, KEY_LEFT_SHIFT,
+    )
+    for ch in text:
+        usage, need_shift = char_usage(ch)
+        if usage is None:
+            raise ValueError(f"键盘不适合输入字符 {ch!r}（非 ASCII）")
+        keys = [KEY_LEFT_SHIFT, usage] if need_shift else [usage]
+        await svc.send_report(kb, build_keyboard_report(keys))
+        await asyncio.sleep(delay)
+        await svc.send_report(kb, build_keyboard_report([]))
+        await asyncio.sleep(delay)
+
+
+async def hid_cmd_v(svc, kb):
+    """发送 Cmd+V。只发两次报告（按下 + 松开），多发会被当成多次粘贴。"""
+    from pymobiledevice3.remote.core_device.hid_service import (
+        build_keyboard_report, KEY_LEFT_GUI,
+    )
+    KEY_V = 0x19
+    await svc.send_report(kb, build_keyboard_report([KEY_LEFT_GUI, KEY_V]))
+    await asyncio.sleep(0.10)
+    await svc.send_report(kb, build_keyboard_report([]))
+
+
+async def hid_tap(svc, W, H, px, py):
+    """在已有的触摸会话里点一下（像素坐标）。"""
+    from pymobiledevice3.remote.core_device.hid_service import (
+        TOUCHSCREEN_STATE_CONTACT, TOUCHSCREEN_STATE_RELEASE,
+    )
+    hx = max(0, min(65535, int(px / W * 65535)))
+    hy = max(0, min(65535, int(py / H * 65535)))
+    await svc.send_touchscreen(TOUCHSCREEN_STATE_CONTACT, hx, hy)
+    await asyncio.sleep(0.06)
+    await svc.send_touchscreen(TOUCHSCREEN_STATE_RELEASE, hx, hy)
+
+
+async def resolve_target(args):
+    """确定要操作的输入框坐标：(label, px, py, W, H) 或 None。
+
+    三种定位方式，优先级从高到低：
+    1. --at x,y            手动指定像素坐标（最可靠）
+    2. --into <标签>       元素树里按标签找，再用 OCR 换坐标
+    3. 自动               用屏幕上的固定参照物推算 ——
+                          Minis 这类界面里输入框 caption 是空的、placeholder 又是灰字
+                          OCR 读不到，所以靠「上下文已用」行与底部按钮夹出的区间定位。
+    """
+    if args.at:
+        try:
+            px, py = [float(v) for v in args.at.split(",")]
+        except ValueError:
+            print(f"--at 格式应为 x,y，收到 {args.at!r}", file=sys.stderr)
+            return None
+        return ("(手动指定)", px, py, 1170, 2532)
+
+    items, (W, H) = await screenshot_and_ocr()
+
+    if args.into:
+        async with CoreDeviceSession() as s:
+            async with AccessibilityAudit(s.rsd) as ax:
+                await ax._ensure_ready()
+                els = await collect_elements(ax)
+        hits = [c for c, _ in els if match(c, args.into, args.match)]
+        if not hits:
+            print(f"元素树里没有 {args.into!r}", file=sys.stderr)
+            return None
+        label = label_of(hits[0])
+        hit = find_coord(items, label)
+        if hit is None:
+            print(f"OCR 找不到 {label!r} 的坐标", file=sys.stderr)
+            return None
+        _, px, py = hit
+        return (label, px, py, W, H)
+
+    # 自动推算：找「上下文已用 / 上下文占用」这类状态行，输入框在它下面
+    anchor = None
+    for t, x, y in items:
+        if "上下文" in t and ("已用" in t or "%" in t):
+            anchor = (t, x, y)
+            break
+    if anchor:
+        _, ax_, ay_ = anchor
+        # 状态行贴着输入框上沿，输入框中心大约再往下 78px
+        py = ay_ + 78
+        return ("(上下文行下方)", 585, py, W, H)
+
+    # 兜底：底部按钮（+ / 斜杠）之上
+    btns = [(t, x, y) for t, x, y in items if t.strip() in {"+", "十", "/", "／"}]
+    if btns:
+        by = max(y for _, _, y in btns)
+        return ("(底部按钮上方)", 585, by - 60, W, H)
+
+    print("定位不到输入框；用 --at x,y 或 --into <标签> 指定。当前可见文字：", file=sys.stderr)
+    for t, x, y in items[:15]:
+        print(f"  {t!r} ({x:.0f},{y:.0f})", file=sys.stderr)
+    return None
+
+
+# ---------- 子命令 ----------
+
+
+async def cmd_tree(args):
+    async with CoreDeviceSession() as s:
+        async with AccessibilityAudit(s.rsd) as ax:
+            await ax._ensure_ready()
+            els = await collect_elements(ax, app=args.app)
+    if args.json:
+        print(json.dumps([{"i": i, "caption": c} for i, (c, _) in enumerate(els)],
+                         ensure_ascii=False, indent=2))
+        return 0
+    print(f"共 {len(els)} 个可聚焦元素：")
+    for i, (cap, _) in enumerate(els):
+        print(f"  [{i:02d}] {cap}")
+    return 0
+
+
+async def cmd_find(args):
+    async with CoreDeviceSession() as s:
+        async with AccessibilityAudit(s.rsd) as ax:
+            await ax._ensure_ready()
+            els = await collect_elements(ax, app=getattr(args, "app", None))
+    hits = [(i, c) for i, (c, _) in enumerate(els) if match(c, args.text, args.match)]
+    if not hits:
+        print(f"未找到匹配 {args.text!r} 的元素（共 {len(els)} 个）。")
+        if args.list_on_miss:
+            for i, (cap, _) in enumerate(els):
+                print(f"  [{i:02d}] {cap}")
+        return 1
+    for i, cap in hits:
+        print(f"[{i:02d}] {cap}")
+    return 0
+
+
+async def cmd_press(args):
+    """点一个屏幕上有文字的控件。
+
+    判据顺序经过一次修正：**以 OCR 为主**，元素树只作辅助。
+    理由：元素树是滚动相关的、而且不完整——SwiftUI 会虚拟化，屏幕外的元素
+    根本不在树里（实测同一屏有时 267 个、有时 21 个）。而 OCR 只看可见区域，
+    恰好等于「能不能点」的判据。之前拿元素树当硬门槛，导致明明在屏幕上的
+    元素也被拒绝。
+    """
+    # 0. --at x,y：手动坐标，跳过一切定位
+    #    这是给纯图标按钮开的口子（返回 / 更多选项 / 拷贝 / 发送）——
+    #    它们屏幕上没有文字，OCR 永远定位不到，只能靠人给坐标。
+    if args.at:
+        try:
+            ax_, ay_ = [float(v) for v in args.at.replace("，", ",").split(",")]
+        except ValueError:
+            print(f"--at 格式应为 x,y（例：--at 117,180），收到 {args.at!r}", file=sys.stderr)
+            return 1
+        print(f"手动坐标 ({ax_:.0f}, {ay_:.0f})，跳过 OCR 定位")
+        if args.dry_run:
+            print("[dry-run] 不执行点击")
+            return 0
+        if args.no_settle:
+            r = subprocess.run(["cdtk-ctrl", "tap", str(int(ax_)), str(int(ay_))],
+                               capture_output=True, text=True, timeout=120)
+            if r.returncode != 0:
+                print(f"cdtk-ctrl tap 失败: {r.stderr[:300]}", file=sys.stderr)
+                return 1
+            print("已点击")
+            return 0
+        print("已点击 · " + await tap_and_settle(ax_, ay_))
+        return 0
+
+    if not args.text:
+        print("要么给文字（press \"文字\"），要么给坐标（--at x,y）。", file=sys.stderr)
+        return 1
+
+    # 1. 定位（主判据是 OCR：看得见才点得到）
+    scrolls = 0
+    if args.scroll:
+        got = await find_with_scroll(args.text, max_down=args.scroll,
+                                     max_up=args.scroll * 2)
+        if got is None:
+            print(f"滚动搜索 {args.scroll*3} 次仍未找到 {args.text!r}，不点击。", file=sys.stderr)
+            return 1
+        text, cx, cy, scrolls, W, H = got
+        hit = (text, cx, cy)
+    else:
+        items, (W, H) = await screenshot_and_ocr()
+        hit = find_coord(items, args.text)
+    if hit is None:
+        # 屏幕上没有 → 用元素树给个更有用的诊断
+        note = ""
+        try:
+            async with CoreDeviceSession() as s:
+                async with AccessibilityAudit(s.rsd) as ax:
+                    await ax._ensure_ready()
+                    els = await collect_elements(ax, budget=12.0, app=getattr(args, "app", None),
+                                                 want=args.text, want_mode=args.match)
+            hits = [c for c, _ in els if match(c, args.text, args.match)]
+            if hits:
+                note = (f"\n元素树里有 {hits[0]!r}，但它不在当前可见区域——"
+                        f"可能需要先滚动到它。")
+            else:
+                note = f"\n元素树（{len(els)} 个，仅当前屏）里也没有。"
+        except Exception:
+            pass
+        print(f"屏幕上找不到 {args.text!r}，不点击。{note}", file=sys.stderr)
+        return 1
+
+    text, cx, cy = hit
+    extra = f"（滚动 {scrolls} 次）" if scrolls else ""
+    print(f"OCR 定位 {text!r} → ({cx:.0f}, {cy:.0f})  [屏幕 {W}x{H}]{extra}")
+
+    if args.dry_run:
+        print("[dry-run] 不执行点击")
+        return 0
+
+    # 2. 同一会话内：取基线帧 → 注入触摸 → 取后续帧
+    #    必须在一个会话里做完，否则各自建隧道要 10s+，而且 settle 拿不到"点前"基线
+    if args.no_settle:
+        r = subprocess.run(["cdtk-ctrl", "tap", str(int(cx)), str(int(cy))],
+                           capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            print(f"cdtk-ctrl tap 失败: {r.stderr[:300]}", file=sys.stderr)
+            return 1
+        print("已点击")
+        return 0
+
+    verdict = await tap_and_settle(cx, cy)
+    print("已点击 · " + verdict)
+    return 0
+
+
+async def tap_and_settle(cx, cy, pre_sec=0.7, post_sec=1.5, fps=10):
+    """取基线 → 点 → 取后续帧 → 判定屏幕有没有变、有没有稳。"""
+    try:
+        import cdtk_settle as S
+        import cdtk_frames as F
+        from pymobiledevice3.remote.core_device.hid_service import (
+            touch_session, TOUCHSCREEN_STATE_CONTACT, TOUCHSCREEN_STATE_RELEASE,
+        )
+    except ImportError as e:
+        return f"(settle 模块缺失: {e})"
+
+    try:
+        async with CoreDeviceSession() as s:
+            # 基线：点之前
+            pre = await F.grab_frames(s.rsd, duration=pre_sec, fps=fps)
+            if not pre:
+                return "(基线取帧失败)"
+            base = F.frames_to_settle(pre)[-1]
+            F.cleanup(pre)
+
+            # 注入触摸（复用同一个 rsd，绝不起子进程 —— 会抢 flock 自锁）
+            async with touch_session(s.rsd) as svc:
+                hx = max(0, min(65535, int(cx / 1170 * 65535)))
+                hy = max(0, min(65535, int(cy / 2532 * 65535)))
+                await svc.send_touchscreen(TOUCHSCREEN_STATE_CONTACT, hx, hy)
+                await asyncio.sleep(0.06)
+                await svc.send_touchscreen(TOUCHSCREEN_STATE_RELEASE, hx, hy)
+
+            # 点之后
+            post = await F.grab_frames(s.rsd, duration=post_sec, fps=fps)
+            if not post:
+                return "(点后取帧失败)"
+            frames = F.frames_to_settle(post)
+            F.cleanup(post)
+    except Exception as e:
+        return f"(settle 出错: {type(e).__name__}: {str(e)[:60]})"
+
+    d = S.diff(base, frames[0])
+    # 末段是否静止：最后 3 帧两两比较
+    tail = frames[-3:] if len(frames) >= 3 else frames
+    stable = all(S.diff(tail[j], tail[j + 1]) < S.QUIET_SHARE for j in range(len(tail) - 1))
+
+    parts = [("屏幕有变化" if d >= S.CHANGED_SHARE else "屏幕无变化（可能没点中）"),
+             (f"变化 {d*100:.0f}%"),
+             ("已静止" if stable else "仍在动"),
+             f"帧数 {len(frames)}"]
+    return " · ".join(parts)
+
+
+
+async def cmd_input(args):
+    """向输入框输入文本：点进输入框，再用虚拟键盘逐字符打字。"""
+    ok, bad = typeable(args.text)
+    if not ok:
+        print(f"这些字符不能用键盘输入：{bad!r}", file=sys.stderr)
+        print("中文等非 ASCII 内容请用 `cdtk-ui paste`（走剪贴板）。", file=sys.stderr)
+        return 1
+
+    tgt = await resolve_target(args)
+    if tgt is None:
+        return 1
+    label, px, py, W, H = tgt
+    print(f"输入框 {label!r} @ ({px:.0f}, {py:.0f})")
+    if args.dry_run:
+        print(f"[dry-run] 将输入 {args.text!r}")
+        return 0
+
+    from pymobiledevice3.remote.core_device.hid_service import touch_session
+    async with CoreDeviceSession() as s:
+        async with touch_session(s.rsd) as svc:
+            kb = await svc.create_keyboard_service()
+            await hid_tap(svc, W, H, px, py)
+            await asyncio.sleep(1.2)          # 等键盘弹出
+            if args.clear:
+                for _ in range(args.clear_len):
+                    await svc.send_report(kb, build_kbd([KEY_DELETE]))
+                    await asyncio.sleep(0.03)
+                    await svc.send_report(kb, build_kbd([]))
+                    await asyncio.sleep(0.03)
+            await hid_type(svc, kb, args.text)
+            if args.submit:
+                await asyncio.sleep(0.15)
+                await svc.send_report(kb, build_kbd([KEY_ENTER]))
+                await asyncio.sleep(0.05)
+                await svc.send_report(kb, build_kbd([]))
+    print(f"已输入 {args.text!r}")
+
+    # 回读校验：键盘打得对不对，只有看屏幕才知道。
+    # 实测教训：键盘处于**中文拼音输入法**时，能拼成拼音的字母会被转成汉字
+    # （输 "aa bb cc" 实际得到 "嗷嗷宝宝 cc"），空格还会被当成「确认候选词」
+    # 吃掉（"minis skills" 变成 "minisskills"）。而 "openmins" 这种非法拼音
+    # 反而原样保留 —— 所以「有时候能打对」最容易骗过人。
+    if not args.no_verify:
+        want = _norm(args.text)
+        try:
+            items2, _ = await screenshot_and_ocr()
+            got = _norm("".join(t for t, _x, _y in items2))
+            if want and want in got:
+                print("回读校验：屏幕上已出现输入的文字 ✓")
+            else:
+                print("回读校验：屏幕上没找到输入的文字！很可能被输入法改写了"
+                      "（中文拼音会把字母转成汉字，还会吃掉空格）。"
+                      "建议改用 `cdtk-ui paste` 走剪贴板。", file=sys.stderr)
+        except Exception as e:
+            print(f"回读校验跳过（{type(e).__name__}）", file=sys.stderr)
+
+    if args.submit:
+        # 回车不一定真能提交：中文输入法下它常常被当成「确认候选词」吃掉。
+        # 实测 Safari 地址栏打 openmins 后回车就没跳转，得点「前往」才走。
+        # 静默失败最难查，所以这里必须报出来。
+        await asyncio.sleep(0.8)
+        try:
+            import cdtk_frames as F
+            async with CoreDeviceSession() as s2:
+                pre = await F.grab_frames(s2.rsd, duration=0.6, fps=10)
+                await asyncio.sleep(1.4)
+                post = await F.grab_frames(s2.rsd, duration=0.6, fps=10)
+            if pre and post:
+                import cdtk_settle as S
+                a = F.frames_to_settle(pre)[-1]
+                b = F.frames_to_settle(post)[-1]
+                d = S.diff(a, b)
+                F.cleanup(pre); F.cleanup(post)
+                if d >= S.CHANGED_SHARE:
+                    print(f"回车已提交，界面有变化（{d*100:.0f}%）")
+                else:
+                    print("回车没有触发提交（界面没变）——很可能是中文输入法把回车"
+                          "当成确认候选词了。请点页面上的「前往 / 搜索」按钮。")
+            else:
+                print("回车已发送（界面变化检测失败，请自行确认）")
+        except Exception as e:
+            print(f"回车已发送（检测跳过: {type(e).__name__}）")
+    return 0
+
+
+async def cmd_paste(args):
+    """把文本写进剪贴板再 Cmd+V 粘贴。中文必须走这条。
+
+    iOS 会弹「<App> 想从 <来源> 粘贴」授权框；--allow 会自动点「允许粘贴」。
+    """
+    print(f"写剪贴板: {args.text[:40]!r}")
+    r = subprocess.run(["apple-clipboard", "set", "--text", args.text],
+                       capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        print(f"apple-clipboard 失败: {r.stderr[:200]}", file=sys.stderr)
+        return 1
+    # 回读校验：解析 JSON 比对完整文本（直接子串匹配会被 JSON 转义坑到）
+    ok_clip = False
+    for _ in range(3):
+        got = subprocess.run(["apple-clipboard", "get", "--compact"],
+                             capture_output=True, text=True, timeout=120).stdout
+        try:
+            val = json.loads(got).get("data", {}).get("text")
+        except (json.JSONDecodeError, AttributeError):
+            val = None
+        if val == args.text:
+            ok_clip = True
+            break
+        time.sleep(0.3)
+    if not ok_clip:
+        print(f"剪贴板回读不一致（读到 {val!r}），中止", file=sys.stderr)
+        return 1
+
+    tgt = await resolve_target(args)
+    if tgt is None:
+        return 1
+    label, px, py, W, H = tgt
+    print(f"输入框 {label!r} @ ({px:.0f}, {py:.0f})")
+
+    if args.dry_run:
+        print("[dry-run] 不执行粘贴")
+        return 0
+
+    from pymobiledevice3.remote.core_device.hid_service import touch_session
+    async with CoreDeviceSession() as s:
+        async with touch_session(s.rsd) as svc:
+            kb = await svc.create_keyboard_service()
+            await hid_tap(svc, W, H, px, py)
+            await asyncio.sleep(1.2)
+            await hid_cmd_v(svc, kb)
+            await asyncio.sleep(2.0)
+            if args.allow:
+                # 找「允许粘贴」并点它 —— 必须复用当前会话截图，
+                # 另开 CoreDeviceSession 会 self-deadlock（同一把 flock）
+                items, (W2, H2) = await screenshot_and_ocr_on(s.rsd)
+                hit = find_coord(items, "允许粘贴")
+                if hit:
+                    _, ax_, ay_ = hit
+                    print(f"授权框 → 点「允许粘贴」({ax_:.0f}, {ay_:.0f})")
+                    await hid_tap(svc, W2, H2, ax_, ay_)
+                else:
+                    print("没有授权框（可能已记住选择）")
+    print("粘贴指令已发出")
+    return 0
+
+
+
+def main():
+    p = argparse.ArgumentParser(
+        prog="cdtk-ui",
+        description="用 CoreDevice 原生通道操作 iPhone 界面（元素树 + 截图 + OCR + 硬件点击）")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    pt = sub.add_parser("tree", help="列出前台 App 的可聚焦元素")
+    pt.add_argument("--json", action="store_true")
+    pt.add_argument("--app", metavar="名称",
+                    help="目标 App（bundle id 或可执行文件名片段，如 safari）。"
+                         "不给就沿用上次读的那个 App——读错应用不会报错，建议显式指定")
+
+    pf = sub.add_parser("find", help="按文本查找元素")
+    pf.add_argument("text")
+    pf.add_argument("--match", choices=["smart", "exact", "contains"], default="smart")
+    pf.add_argument("--list-on-miss", action="store_true")
+    pf.add_argument("--app", metavar="名称", help="目标 App（bundle id 或名称片段）")
+
+    pp = sub.add_parser("press", help="点控件：按文字（OCR 定位）或按坐标（--at），点后判定界面是否稳定")
+    pp.add_argument("text", nargs="?", help="要点击的文字；用 --at 时可省略")
+    pp.add_argument("--at", metavar="X,Y",
+                    help="直接点这个坐标（像素），跳过 OCR。给纯图标按钮用：返回/更多选项/拷贝/发送")
+    pp.add_argument("--match", choices=["smart", "exact", "contains"], default="smart")
+    pp.add_argument("--dry-run", action="store_true")
+    pp.add_argument("--no-settle", action="store_true", help="点完不等待界面稳定")
+    pp.add_argument("--app", metavar="名称", help="诊断用的目标 App（不影响 OCR 定位）")
+    pp.add_argument("--scroll", type=int, default=0, metavar="N",
+                    help="当前屏找不到就滚动搜索：先往更早找 N 次，再往更新找 2N 次")
+
+    pg = sub.add_parser("grid", help="截图叠加坐标网格，方便给 --at 量位置")
+    pg.add_argument("--step", type=int, default=100, help="网格间距（像素，默认 100）")
+    pg.add_argument("--out", default="cdtk_grid.png", help="输出路径（默认 ./cdtk_grid.png）")
+
+    pi = sub.add_parser("input", help="向输入框输入文本（虚拟键盘逐字符打字，仅 ASCII）")
+    pi.add_argument("text")
+    pi.add_argument("--into", help="目标输入框的标签（默认自动推算位置）")
+    pi.add_argument("--at", help="手动指定坐标 x,y（像素）")
+    pi.add_argument("--match", choices=["smart", "exact", "contains"], default="smart")
+    pi.add_argument("--submit", action="store_true", help="输入后按回车")
+    pi.add_argument("--no-verify", action="store_true", help="输入后不回读校验")
+    pi.add_argument("--clear", action="store_true", help="先按退格清空")
+    pi.add_argument("--clear-len", type=int, default=30, help="退格次数（默认 30）")
+    pi.add_argument("--dry-run", action="store_true")
+
+    ppa = sub.add_parser("paste", help="把文本写进剪贴板并 Cmd+V 粘贴（中文用这个）")
+    ppa.add_argument("text")
+    ppa.add_argument("--into", help="目标输入框的标签")
+    ppa.add_argument("--at", help="手动指定坐标 x,y（像素）")
+    ppa.add_argument("--match", choices=["smart", "exact", "contains"], default="smart")
+    ppa.add_argument("--allow", action="store_true", help="自动点「允许粘贴」授权框")
+    ppa.add_argument("--dry-run", action="store_true")
+
+    args = p.parse_args()
+    handler = {"tree": cmd_tree, "find": cmd_find, "press": cmd_press,
+               "grid": cmd_grid, "input": cmd_input, "paste": cmd_paste}[args.cmd]
+    sys.exit(asyncio.run(handler(args)))
+
+
+if __name__ == "__main__":
+    main()
