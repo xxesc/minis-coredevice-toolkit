@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+"""cdtk-tool —— cdtk 工具链的增删/一致性管理（一条命令完成全套同步）
+
+唯一真源：/root/cdtk（git 仓库）
+  /usr/local/bin/cdtk-*  → 软链到 /root/cdtk/src/*
+  技能 scripts/          → 软链到 /root/cdtk/src
+所以「删一个工具」只需改仓库 + 文档，然后这一条命令跑完。
+
+用法:
+  cdtk-tool ls                        列出工具与安装状态
+  cdtk-tool rm <name>... [--no-push] [--dry-run] [--smoke]
+  cdtk-tool add <file>... [--no-push] 安装新工具（加 setup.sh + 软链 + 提交）
+  cdtk-tool check                     结构一致性 + 全量 smoke（约 30s）
+
+默认只跑毫秒级结构检查；加 --smoke 才跑完整 tests/smoke.sh。
+"""
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+REPO = Path(os.environ.get('CDTK_REPO', '/root/cdtk'))
+SRC = REPO / 'src'
+TESTS = REPO / 'tests' / 'smoke.sh'
+SKILL = Path('/var/minis/skills/coredevice-toolkit/SKILL.md')
+EXAMPLE = REPO / 'SKILL.example.md'
+BINDIR = Path('/usr/local/bin')
+SKILL_SCRIPTS = SKILL.parent / 'scripts'
+
+
+def sh(cmd, check=True):
+    return subprocess.run(cmd, shell=True, check=check, text=True,
+                          capture_output=True)
+
+
+def shquote(s):
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
+def tools_in_setup():
+    for line in (SRC / 'setup.sh').read_text(encoding='utf-8').splitlines():
+        m = re.match(r'^for tool in (.+); do$', line.strip())
+        if m:
+            return m.group(1).split()
+    return []
+
+
+def write_setup_tools(names):
+    p = SRC / 'setup.sh'
+    s = p.read_text(encoding='utf-8')
+    s = re.sub(r'^for tool in .+; do$', 'for tool in ' + ' '.join(names) + '; do',
+               s, count=1, flags=re.M)
+    p.write_text(s, encoding='utf-8')
+
+
+def drop_section(text, name):
+    out, skip = [], False
+    for ln in text.split('\n'):
+        if re.match(r'^### \d+\.\s+`%s`' % re.escape(name), ln):
+            skip = True
+            continue
+        if skip and (ln.startswith('### ') or ln.startswith('## ')):
+            skip = False
+        if not skip:
+            out.append(ln)
+    return '\n'.join(out)
+
+
+def renumber_headings(text):
+    n = [0]
+
+    def rep(m):
+        n[0] += 1
+        return '### %d. `%s`' % (n[0], m.group(2))
+    return re.sub(r'^### (\d+)\.\s+`(cdtk-[\w-]+)`', rep, text, flags=re.M)
+
+
+def relink():
+    for f in SRC.glob('cdtk-*'):
+        d = BINDIR / f.name
+        if d.is_symlink():
+            d.unlink()
+        if not d.exists():
+            os.symlink(f, d)
+    for d in BINDIR.glob('cdtk-*'):
+        if d.is_symlink() and not Path(os.readlink(d)).exists():
+            print('  清理悬空软链', d.name)
+            d.unlink()
+
+
+def left_refs(name):
+    hits = []
+    paths = [SKILL, EXAMPLE] + sorted((REPO / 'references').glob('*.md'))
+    for p in paths:
+        if not p.exists():
+            continue
+        for i, ln in enumerate(p.read_text(encoding='utf-8').splitlines(), 1):
+            if name in ln:
+                hits.append('%s:%d: %s' % (p.name, i, ln.strip()[:100]))
+    return hits
+
+
+def static_ok(quiet=False):
+    ok = True
+    reg = tools_in_setup()
+    real = sorted(p.name for p in SRC.glob('cdtk-*'))
+    if sorted(reg) != real:
+        print('✗ setup.sh 与 src/ 不一致')
+        print('  only setup:', sorted(set(reg) - set(real)))
+        print('  only src:  ', sorted(set(real) - set(reg)))
+        ok = False
+    for n in real:
+        link = BINDIR / n
+        if not (link.is_symlink() and Path(os.readlink(link)) == SRC / n):
+            print('✗ 软链不对:', link)
+            ok = False
+    if not (SKILL_SCRIPTS.is_symlink() and Path(os.readlink(SKILL_SCRIPTS)) == SRC):
+        print('✗ 技能 scripts 不是指向 src 的软链:', SKILL_SCRIPTS)
+        ok = False
+    if not quiet:
+        print('结构:', 'ok' if ok else 'FAIL')
+    return ok
+
+
+def smoke():
+    if not TESTS.exists():
+        print('  (没有 tests/smoke.sh，跳过)')
+        return True
+    r = sh('bash %s' % TESTS, check=False)
+    for l in r.stdout.splitlines():
+        if 'FAIL' in l or l.startswith('smoke:'):
+            print('  ' + l)
+    return r.returncode == 0
+
+
+def git_commit_push(msg, push):
+    sh('git -C %s add -A' % REPO)
+    r = sh('git -C %s -c user.name=cdtk -c user.email=cdtk@local commit -q -m %s'
+           % (REPO, shquote(msg)), check=False)
+    if r.returncode != 0:
+        print('  (没有改动可提交)')
+        return
+    print('  提交:', sh('git -C %s log -1 --oneline' % REPO).stdout.strip())
+    if push:
+        r = sh('git -C %s push -q origin HEAD:main' % REPO, check=False)
+        print('  推送:', 'ok' if r.returncode == 0 else 'FAILED ' + r.stderr[:120])
+
+
+def cmd_ls():
+    names = tools_in_setup()
+    real = sorted(p.name for p in SRC.glob('cdtk-*'))
+    print('setup.sh 注册 %d 个，src/ 实现 %d 个' % (len(names), len(real)))
+    for n in real:
+        link = BINDIR / n
+        state = 'link' if link.is_symlink() else ('copy' if link.exists() else '未安装')
+        print('  %-16s %-9s%s' % (n, state, '' if n in names else '  ← 未注册'))
+    extra = [n for n in names if n not in real]
+    if extra:
+        print('  setup.sh 注册但 src/ 缺失:', ' '.join(extra))
+
+
+def cmd_rm(args):
+    names = [a for a in args if not a.startswith('-')]
+    push = '--no-push' not in args
+    dry = '--dry-run' in args
+    if not names:
+        sys.exit('用法: cdtk-tool rm <name>... [--no-push] [--dry-run] [--smoke]')
+    t0 = time.time()
+    for name in names:
+        print('▶ %s' % name)
+        f = SRC / name
+        if f.exists():
+            if not dry:
+                f.unlink()
+            print('  删 src/%s' % name)
+        else:
+            print('  src/%s 不存在，跳过' % name)
+
+        reg = tools_in_setup()
+        if name in reg:
+            if not dry:
+                write_setup_tools([x for x in reg if x != name])
+            print('  setup.sh 清单移除')
+        else:
+            print('  setup.sh 清单本就没有')
+
+        if SKILL.exists():
+            s = SKILL.read_text(encoding='utf-8')
+            s2 = drop_section(s, name)
+            if s2 != s:
+                s2 = renumber_headings(s2)
+                if not dry:
+                    SKILL.write_text(s2, encoding='utf-8')
+                print('  SKILL.md 删节 + 重编号')
+            else:
+                print('  SKILL.md 无该节')
+
+        if EXAMPLE.exists():
+            s = EXAMPLE.read_text(encoding='utf-8')
+            s2 = '\n'.join(l for l in s.splitlines() if '`%s`' % name not in l)
+            if s2 != s:
+                if not dry:
+                    EXAMPLE.write_text(s2 + '\n', encoding='utf-8')
+                print('  SKILL.example.md 去引用')
+
+        link = BINDIR / name
+        if link.exists() or link.is_symlink():
+            if not dry:
+                link.unlink()
+            print('  删 /usr/local/bin/%s' % name)
+
+        if not dry:
+            relink()
+
+        left = left_refs(name)
+        if left:
+            print('  ⚠ 仍有 %d 处提及（references 等，需人工确认）' % len(left))
+            for h in left[:5]:
+                print('     ' + h)
+        else:
+            print('  文档残留: 0')
+
+    if dry:
+        print('\n[dry-run] 未落盘，耗时 %.1fs' % (time.time() - t0))
+        return
+    gate = smoke() if '--smoke' in args else static_ok()
+    if not gate:
+        sys.exit('\n✗ 检查未通过，已停在提交前（git checkout 可回滚）')
+    git_commit_push('chore: 移除 %s' % ' '.join(names), push)
+    print('\n✓ 完成，耗时 %.1fs' % (time.time() - t0))
+
+
+def cmd_add(args):
+    files = [a for a in args if not a.startswith('-')]
+    push = '--no-push' not in args
+    if not files:
+        sys.exit('用法: cdtk-tool add <脚本路径>... [--no-push]')
+    t0 = time.time()
+    names = tools_in_setup()
+    for f in files:
+        p = Path(f)
+        if not p.exists():
+            sys.exit('找不到 %s' % f)
+        dst = SRC / p.name
+        if p.parent != SRC:
+            shutil.move(str(p), str(dst))
+        os.chmod(dst, 0o755)
+        if dst.name not in names:
+            names.append(dst.name)
+        print('  装入 src/%s' % dst.name)
+    write_setup_tools(names)
+    relink()
+    print('  setup.sh 注册 + 软链就绪')
+    gate = smoke() if '--smoke' in args else static_ok()
+    if not gate:
+        sys.exit('\n✗ 检查未通过，已停在提交前')
+    git_commit_push('feat: 新增 %s' % ' '.join(Path(f).name for f in files), push)
+    print('\n✓ 完成，耗时 %.1fs' % (time.time() - t0))
+
+
+def cmd_check():
+    ok = static_ok()
+    sot = smoke()
+    sys.exit(0 if (ok and sot) else 1)
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ('-h', '--help', 'help'):
+        print(__doc__)
+        return
+    cmd, rest = sys.argv[1], sys.argv[2:]
+    {'ls': cmd_ls, 'rm': lambda: cmd_rm(rest),
+     'add': lambda: cmd_add(rest), 'check': cmd_check}.get(
+        cmd, lambda: sys.exit('未知命令: ' + cmd))()
+
+
+if __name__ == '__main__':
+    main()

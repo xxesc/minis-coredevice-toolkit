@@ -36,18 +36,30 @@ done
 [ -n "$DOCS" ] || { echo "smoke: FAIL (no README*.md or SKILL.md)"; exit 1; }
 
 # 1. Every tool prints usage (--help, or usage on bare run for cdtk-notify).
+#    并行跑：每个工具都要 import pymobiledevice3，串行在 iSH 上要 60s+。
+tmpd=$(mktemp -d)
+for f in "$SRC"/cdtk-*; do
+    (
+        n=$(basename "$f")
+        case $n in
+            cdtk-doctor) r="skip (no -h by design)";;
+            cdtk-notify) out=$(cd "$SRC" && sh "$f" 2>&1) || true
+                         case $out in *Usage*|*usage:*|*用法*) r=ok;; *) r=FAIL;; esac;;
+            *) out=$(cd "$SRC" && python3 "$f" --help 2>&1) || true
+               case $out in *Usage*|*usage:*|*用法*) r=ok;; *) r=FAIL;; esac;;
+        esac
+        printf '%-58s %s\n' "help: $n" "$r" > "$tmpd/$n.out"
+        [ "$r" = FAIL ] && : > "$tmpd/$n.fail"
+    ) &
+done
+wait
 for f in "$SRC"/cdtk-*; do
     n=$(basename "$f")
-    case $n in
-        cdtk-doctor) say "help: $n" "skip (no -h by design)"; continue;;
-        cdtk-notify) out=$(cd "$SRC" && sh "$f" 2>&1);;
-        *) out=$(cd "$SRC" && python3 "$f" --help 2>&1);;
-    esac
-    case $out in
-        *Usage*|*usage:*|*用法*) say "help: $n" "ok";;
-        *) say "help: $n" "FAIL"; fail=1;;
-    esac
+    cat "$tmpd/$n.out" 2>/dev/null || printf '%-58s %s\n' "help: $n" FAIL
+    [ -e "$tmpd/$n.fail" ] && fail=1
 done
+rm -rf "$tmpd"
+
 
 # 2. Every --flag mentioned next to a tool name in the docs must actually be declared
 #    by that tool's argparse. Collects option strings via ast, then diffs against the docs;
