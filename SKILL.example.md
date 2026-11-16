@@ -22,7 +22,6 @@ compatibility: "iOS 27.3 (实测) · iSH/Alpine aarch64 · Node.js 18+ · Python
 
 - 给这台手机装 / 卸 IPA（本地签名直装），用 `cdtk-install`
 - 在真机上注入点按、滑动、拉起 App，用 `cdtk-ctrl`
-- 要「按屏幕上的文字点」而不是靠猜坐标，用 `cdtk-ui`（元素树 + OCR 定位 + 点后判定界面是否稳定）
 - 读某个 App 的沙盒（Documents / Library）或媒体分区，用 `cdtk-fs`
 - 看崩溃日志、电池数据、系统日志，用 `cdtk-crash` / `cdtk-diag`
 - 管理描述文件、编排主屏布局、给进程加 Jetsam 豁免，用 `cdtk-profile` / `cdtk-springboard` / `cdtk-proc`
