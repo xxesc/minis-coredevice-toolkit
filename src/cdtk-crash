@@ -22,6 +22,7 @@ BUG_TYPES = {
     "109": "Crash (崩溃/内存越界)",
     "145": "Disk Writes Resource (系统磁盘高频写入超限)",
     "188": "Resource Exhaustion (CPU/磁盘超限)",
+    "228": "App Hang (主线程 runloop 卡顿采样)",
     "298": "Jetsam Event (系统内存紧张杀后台)",
     "288": "Disk Writes Resource (高频写磁盘超限)",
     "309": "Watchdog Timeout (主线程卡死超限杀)",
@@ -50,6 +51,12 @@ def parse_and_print_crash(content: bytes, target_name: str):
     bug_id = str(header.get("bug_type") or body.get("bug_type") or "")
     bug_desc = BUG_TYPES.get(bug_id, f"未知类型 ({bug_id})" if bug_id else "系统诊断报告")
     proc_name = body.get("procName") or body.get("process") or posixpath.basename(target_name)
+    if not body:  # 228 等文本报告只有正文，进程名在 Process/Command 行
+        m = re.search(r"^(?:Process|Command):\s*(\S+)", text, re.M)
+        if m:
+            proc_name = m.group(1)
+    elif body.get("largestProcess") and "procName" not in body:
+        proc_name = body["largestProcess"] + " (Jetsam 内存最大进程)"
     timestamp = header.get("timestamp") or body.get("date") or "未知"
 
     print(f" • 故障类型:     \033[33m{bug_desc}\033[0m")
@@ -57,6 +64,21 @@ def parse_and_print_crash(content: bytes, target_name: str):
     print(f" • 崩溃应用/进程: \033[36m{proc_name}\033[0m")
     if body.get("bundleInfo", {}).get("CFBundleIdentifier"):
         print(f" • Bundle ID:    {body['bundleInfo']['CFBundleIdentifier']}")
+
+    if bug_id == "228":
+        dur = header.get("duration_ms") or body.get("duration_ms")
+        try:
+            if dur:
+                print(f" • 卡顿时长:     \033[33m{int(dur) / 1000:.1f}s\033[0m (runloop 超时阈值 7-10s)")
+        except (TypeError, ValueError):
+            pass
+        m = re.search(r"^Reason:\s*(.+)$", text, re.M)
+        if m:
+            print(f" • 报告原因:     {m.group(1).strip()}")
+        m = re.search(r"^Time Since Fork:\s*(.+)$", text, re.M)
+        if m:
+            print(f" • 启动后时长:   {m.group(1).strip()} (卡在启动/任务早期)")
+        print(" 💡 该类型是采样报告：进程通常没被杀，栈在报告正文的 Thread 段（按样本数看最深叶节点）")
 
     ex = body.get("exception", {})
     if ex:
@@ -68,6 +90,10 @@ def parse_and_print_crash(content: bytes, target_name: str):
         print(f" • 终止原因:     \033[31m{tr.get('namespace')} - 标志: {tr.get('indicator')}\033[0m")
         if tr.get("details"):
             print(f" • 终止详情:     {tr.get('details')}")
+        reasons = tr.get("reasons") or []
+        if reasons:
+            first = " ".join(str(reasons[0]).split())
+            print(f" • 终止详情:     {first[:300]}")
 
     threads = body.get("threads", [])
     crashed_idx = -1
@@ -80,9 +106,16 @@ def parse_and_print_crash(content: bytes, target_name: str):
         print(f"\n 💥 崩溃触发线程 [Thread {crashed_idx}]:")
         print(" ─" * 38)
         frames = threads[crashed_idx].get("frames", [])
+        used_images = body.get("usedImages", [])
         for f in frames[:15]:
             sym = f.get("symbol") or f"0x{f.get('imageOffset', 0):x}"
-            img = f.get("imageName") or "binary"
+            img = f.get("imageName")
+            if not img:
+                idx = f.get("imageIndex")
+                if isinstance(idx, int) and 0 <= idx < len(used_images):
+                    img = used_images[idx].get("name") or posixpath.basename(
+                        used_images[idx].get("path") or "")
+            img = img or "binary"
             print(f"   • {img:<24} {sym}")
     elif "largestProcess" in body:
         print(f"\n ⚠️ 内存超限杀进程 (Jetsam):")
@@ -96,16 +129,38 @@ def extract_crash_timestamp(path: str) -> str:
     return m.group(1) if m else ""
 
 async def scan_all_crash_reports(cm: CrashReportsManager) -> list:
+    """扫描崩溃报告目录，返回设备上的真实绝对路径。
+
+    旧日志会被系统从根目录搬进 /Retired（还有 /Assistant 等子目录），
+    所以读文件必须用 ls 返回的完整路径，不能拿文件名去拼 "/"。
+    """
+    folders = ["/"]
+    seen_dirs = {"/"}
+    try:
+        root_entries = await cm.ls("/")
+    except Exception:
+        root_entries = []
+    for e in root_entries:
+        if ".ips" in e:
+            continue
+        d = e if e.startswith("/") else posixpath.join("/", e)
+        if d not in seen_dirs:
+            seen_dirs.add(d)
+            folders.append(d)
+    if "/Retired" not in seen_dirs:
+        folders.append("/Retired")
+
     all_files = []
-    for folder in ["/", "/Retired"]:
+    for folder in folders:
         try:
             entries = await cm.ls(folder)
-            for e in entries:
-                if ".ips" in e:
-                    p = e if e.startswith("/") else posixpath.join(folder, e)
-                    all_files.append(p)
         except Exception:
-            pass
+            continue
+        for e in entries:
+            if ".ips" not in e:
+                continue
+            p = e if e.startswith("/") else posixpath.join(folder, e)
+            all_files.append(p)
     seen = set()
     unique_files = []
     for f in all_files:
@@ -114,6 +169,46 @@ async def scan_all_crash_reports(cm: CrashReportsManager) -> list:
             unique_files.append(f)
     unique_files.sort(key=extract_crash_timestamp, reverse=True)
     return unique_files
+
+
+def build_candidates(scanned: list, name: str) -> list:
+    """把用户输入（绝对路径 / 文件名 / 文件名片段）解析成候选真实路径。
+
+    优先：显式绝对路径 → 同名文件（根目录优先）→ 名称包含匹配（按时间倒序）。
+    """
+    name = (name or "").strip()
+    if not name:
+        return []
+    base = posixpath.basename(name.rstrip("/"))
+    candidates = []
+    if name.startswith("/"):
+        candidates.append(name)
+
+    exact = [p for p in scanned if posixpath.basename(p) == base]
+    exact.sort(key=lambda p: 0 if posixpath.dirname(p) in ("", "/") else 1)
+    partial = [p for p in scanned if base and base.lower() in posixpath.basename(p).lower()]
+
+    out = []
+    for p in candidates + exact + partial + ["/" + base]:
+        if p not in out:
+            out.append(p)
+    return out
+
+
+async def read_report_content(cm: CrashReportsManager, name: str) -> tuple:
+    """按名字解析真实路径并读取内容，返回 (真实路径, bytes)。"""
+    scanned = await scan_all_crash_reports(cm)
+    last_err = None
+    for cand in build_candidates(scanned, name):
+        try:
+            return cand, await cm.afc.get_file_contents(cand)
+        except Exception as e:
+            last_err = e
+    hint = ""
+    if last_err is not None and "OBJECT_NOT_FOUND" in str(last_err):
+        hint = "\n💡 该文件可能已被系统清理，用 cdtk-crash list 查看当前可用日志。"
+    raise RuntimeError(f"未找到日志 {name!r}: {last_err}{hint}")
+
 
 async def cmd_list(args):
     print("⚡ 正在通过 CoreDevice RSD 扫描系统崩溃与诊断日志...")
@@ -139,34 +234,36 @@ async def cmd_list(args):
                 t = "Jetsam(内存超限)"
             elif "diskwrites" in name:
                 t = "DiskWrite(写盘超限)"
+            elif "UIKit-runloop" in name:
+                t = "Hang(主线程卡顿)"
             elif "Crash" in name or ".ips" in name:
                 t = "Crash(崩溃)"
+            if not name:
+                name = f
             print(f" {i:<4} {t:<16} {name}")
         print("─" * 76)
         print("💡 查看详情: cdtk-crash view <文件名>  或  导出: cdtk-crash pull <文件名>")
         print("💡 一键透视: cdtk-crash latest [-s/--save]\n")
 
 async def cmd_view(args):
-    target = args.filename
-    if not target.startswith("/"):
-        target = "/" + target
-
-    print(f"⚡ 正在拉取并解析崩溃日志: {target}...")
+    print(f"⚡ 正在拉取并解析崩溃日志: {args.filename}...")
     async with CoreDeviceSession() as s:
         cm = CrashReportsManager(s.rsd)
         try:
-            content = await cm.afc.get_file_contents(target)
+            path, content = await read_report_content(cm, args.filename)
         except Exception as e:
             print(f"❌ 读取崩溃日志失败: {e}")
             sys.exit(1)
+        if path != args.filename:
+            print(f"📎 实际路径: {path}")
 
-        parse_and_print_crash(content, target)
+        parse_and_print_crash(content, path)
 
 async def cmd_pull(args):
     target = args.filename
     async with CoreDeviceSession() as s:
         cm = CrashReportsManager(s.rsd)
-        
+
         # 支持未指定文件时自动抓取最新的崩溃日志
         if target is None:
             ips = await scan_all_crash_reports(cm)
@@ -176,20 +273,19 @@ async def cmd_pull(args):
             target = ips[0]
             print(f"🎯 自动选取最近一份崩溃日志: {target}")
 
-        if not target.startswith("/"):
-            target = "/" + target
-
-        fname = posixpath.basename(target)
+        fname = posixpath.basename(target.rstrip("/"))
         out_path = args.output
         if not out_path:
             out_path = f"/var/minis/workspace/crash/{fname}"
 
         print(f"⚡ 正在导出崩溃日志: {target} -> {out_path}...")
         try:
-            content = await cm.afc.get_file_contents(target)
+            real_path, content = await read_report_content(cm, target)
         except Exception as e:
             print(f"❌ 导出崩溃日志失败: {e}")
             return 1
+        if real_path != target:
+            print(f"📎 实际路径: {real_path}")
 
         os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
         with open(out_path, "wb") as fp:
@@ -213,14 +309,13 @@ async def cmd_latest(args):
             return
         target = ips[0]
         print(f"🎯 命中最新日志: {target}")
-        target_path = "/" + target.lstrip("/")
         try:
-            content = await cm.afc.get_file_contents(target_path)
+            real_path, content = await read_report_content(cm, target)
         except Exception as e:
             print(f"❌ 读取日志失败: {e}")
             return
 
-        parse_and_print_crash(content, target)
+        parse_and_print_crash(content, real_path)
 
         if getattr(args, "save", False) or getattr(args, "pull", False):
             fname = posixpath.basename(target)
