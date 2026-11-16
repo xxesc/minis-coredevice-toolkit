@@ -1054,7 +1054,7 @@ def main():
     pg.add_argument("--step", type=int, default=100, help="网格间距（像素，默认 100）")
     pg.add_argument("--out", default="cdtk_grid.png", help="输出路径（默认 ./cdtk_grid.png）")
 
-    pi = sub.add_parser("input", help="向输入框输入文本（虚拟键盘逐字符打字，仅 ASCII）")
+    pi = sub.add_parser("input", help="向输入框输入文本（虚拟键盘逐字符打字，仅 ASCII；第三方输入法下支持不完善）")
     pi.add_argument("text")
     pi.add_argument("--into", help="目标输入框的标签（默认自动推算位置）")
     pi.add_argument("--at", help="手动指定坐标 x,y（像素）")
@@ -1067,7 +1067,7 @@ def main():
     pi.add_argument("--clear-len", type=int, default=30, help="退格次数（默认 30）")
     pi.add_argument("--dry-run", action="store_true")
 
-    ppa = sub.add_parser("paste", help="把文本写进剪贴板并 Cmd+V 粘贴（中文用这个）")
+    ppa = sub.add_parser("paste", help="把文本写进剪贴板并 Cmd+V 粘贴（中文用这个；第三方输入法会拦截 Cmd+V，支持不完善）")
     ppa.add_argument("text")
     ppa.add_argument("--into", help="目标输入框的标签")
     ppa.add_argument("--at", help="手动指定坐标 x,y（像素）")

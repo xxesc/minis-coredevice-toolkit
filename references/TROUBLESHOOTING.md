@@ -96,30 +96,23 @@ No. Each command is its own process; the RSD session and the Node child are rele
 leftover process and no listening port one second after exit). A clean exit leaves nothing behind; a session interrupted by `timeout` or SIGKILL leaves a directory containing `relay.sock`,
 and `cdtk-doctor` sweeps those older than a day whose pid is gone (`--no-sweep` skips the sweep). `/tmp/.cdtk_rsd_port.json` (the port cache) is kept by design.
 
-**Q7: `cdtk-ui input` loses spaces, or turns letters into Chinese characters**
+**Q7: text input under a third-party keyboard is only partially supported**
 
-This is the keyboard, not the tunnel. Same string `minis skills`, sent as pure HID key reports with no tapping on the
-on-screen keyboard:
+Same string `minis skills`, pure HID keys, nothing tapped on the on-screen keyboard:
 
 | keyboard in use | what lands in the field |
 | --- | --- |
-| third-party IME, Chinese pinyin mode | `minisskills` — the space is taken as "accept candidate"; `aa bb cc` comes back as `嗷嗷宝宝 cc` |
-| third-party IME, English QWERTY | `minisskills` — the space is still gone |
-| Apple English (US) | `Minis skills` — intact (`M` is the system's own capitalisation) |
+| third-party IME (Doubao, tested) | `minisskills` — space swallowed; in pinyin mode letters also turn into Chinese characters; it takes over `Cmd+V` too |
+| Apple English (US) | `Minis skills` — correct (`M` is the system's own capitalisation) |
 
-So the space is swallowed by the third-party keyboard extension, not by the injection path. Do not go looking for
-this in the RSD or HID layer.
+**The keyboard extension does this, not the tunnel — do not look for it in the RSD or HID layer.**
 
-`cdtk-ui input` therefore routes any text containing a space or non-ASCII characters through the clipboard
-(`--no-paste` forces the keyboard), and `cdtk-ui paste` re-reads the screen afterwards and fails loudly when the text
-did not land in the field.
+What CDTK does about it:
 
-With an IME that also takes over `Cmd+V` (observed: Doubao), the content goes into its own clipboard suggestion bar
-and the field stays empty. The only path that works there is **long-press the field → "Paste" in the edit menu**, by
-hand or from your own automation; CDTK has no automatic fallback for it.
-
-No app can choose a keyboard. `isSecureTextEntry` is the one thing that forces the system keyboard, and it masks the
-text and blocks the paste menu — useless for a normal input field. To make typing predictable, remove or disable the
-third-party keyboard in Settings → General → Keyboard → Keyboards.
+- `input` sends any text containing a space or non-ASCII through the clipboard (`--no-paste` forces the keyboard).
+- `paste` re-reads the screen and fails loudly when the text did not land.
+- When the IME takes over `Cmd+V` there is no automatic path: **long-press the field → "Paste"**, by hand.
+- No app can choose a keyboard (`isSecureTextEntry` is the only forced-system-keyboard API and it masks the text).
+  For predictable input, remove or disable the third-party keyboard in Settings → General → Keyboard → Keyboards.
 
 ---
