@@ -48,34 +48,60 @@ async def cmd_mem(args):
             t1 = time.time()
             
             print("\n" + "═" * 68)
-            print(" 🎉 恭喜！目标进程已成功解除 Jetsam 内存限制 (Memory Limit Waived)！")
+            print(" ✅ 豁免请求已提交 (disable_memory_limit_for_pid 返回正常)")
             print("═" * 68)
             print(f"  • 目标标识:   {args.target}")
             print(f"  • 进程 PID:   {pid}")
-            print(f"  • 内核状态:   \033[1;32m已免疫系统内存超限查杀 (Jetsam Immune)\033[0m")
             print(f"  • 操作耗时:   {t1 - t0:.2f} 秒")
             print("═" * 68)
-            print("💡 说明: 该应用现在可以自由申请大内存空间（运行虚拟机/大模型/重型脚本），")
-            print("   不会因为物理内存占用过高被 iOS 内核强制闪退！\n")
+            print("⚠️  说明: 这只是一次 RPC 调用成功，工具无法校验内核是否真的放宽了上限；")
+            print("   豁免也只对本次进程运行有效，App 重启后失效，需重新执行。\n")
     return 0
 
 
+SIG_NAMES = {"stop": 17, "cont": 19, "kill": 9, "term": 15}
+
+
+def parse_signal(token):
+    """返回 (信号名, 信号值)；非法返回 (None, None)。不再把任意字符串 int() 成信号号。"""
+    t = str(token).strip().lower()
+    if t in SIG_NAMES:
+        return t, SIG_NAMES[t]
+    if t.isdigit():
+        v = int(t)
+        if 1 <= v <= 64:
+            return str(v), v
+    return None, None
+
+
+def normalize_signal_args(target, signal):
+    """容忍 `signal cont 6463` 这种顺序写反的调用。返回 (target, signal, 是否纠正过)。"""
+    name_t, _ = parse_signal(target)
+    name_s, _ = parse_signal(signal)
+    if name_t and not name_s:
+        return signal, target, True
+    return target, signal, False
+
+
 async def cmd_signal(args):
+    args.target, args.signal, swapped = normalize_signal_args(args.target, args.signal)
+    if swapped:
+        print(f"ℹ️  检测到参数顺序写反，已按 target={args.target} signal={args.signal} 执行")
+
+    sig_name, sig_val = parse_signal(args.signal)
+    if sig_val is None:
+        print(f"❌ 无法识别的信号: {args.signal}")
+        print("   可用: stop (SIGSTOP) / cont (SIGCONT) / kill (SIGKILL) / term (SIGTERM)，或 1-64 的数字")
+        return 2
+
     if not args.yes:
         print(f"🛑 [安全阻断] 准备向进程 {args.target} 发送信号: {args.signal}")
         print("   警告：SIGKILL/SIGSTOP 可能直接终止或冻结系统进程。")
         print("   此高危操作必须显式追加 -y / --yes 参数方可执行。")
         return 1
 
-    sig_map = {
-        "stop": 17,    # SIGSTOP
-        "cont": 19,    # SIGCONT
-        "kill": 9,     # SIGKILL
-        "term": 15,    # SIGTERM
-    }
-    sig_val = sig_map.get(str(args.signal).lower()) or int(args.signal)
-    
-    print(f"⚡ 正在向进程 \033[1;36m{args.target}\033[0m 注入内核信号: \033[33m{args.signal} (SIG={sig_val})\033[0m...")
+    print(f"⚡ 正在向进程 \033[1;36m{args.target}\033[0m 注入内核信号: "
+          f"\033[33m{sig_name} (SIG={sig_val})\033[0m...")
     async with CoreDeviceSession() as s:
         async with DvtProvider(s.rsd) as provider:
             pc = ProcessControl(provider)
