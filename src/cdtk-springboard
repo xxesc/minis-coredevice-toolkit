@@ -2,7 +2,7 @@
 """
 cdtk-springboard: iOS 原生桌面图标编排与文件夹分类管理工具
 基于 CoreDevice RSD 底层通道与 SpringBoardServices 服务 (com.apple.springboardservices)
-支持免电脑、免越狱直接导出、备份与一键生效自定义主屏布局 (setIconState)
+支持免电脑、免越狱导出、备份与下发自定义主屏布局 (setIconState)；下发后会回读校验，但 SpringBoard 可能对布局做规范化
 """
 
 import argparse
@@ -14,6 +14,44 @@ import sys
 
 from coredevice_session import CoreDeviceSession
 from pymobiledevice3.services.springboard import SpringBoardServicesService
+
+def validate_layout(layout):
+    """下发前的最后一道闸：宁可拒绝，也不要用半成品布局覆盖主屏。"""
+    problems = []
+    if not isinstance(layout, list) or not layout:
+        return ["根元素必须是非空列表（页面列表）"]
+    total_icons = 0
+    for i, page in enumerate(layout):
+        if not isinstance(page, list):
+            problems.append("第 %d 页不是列表" % (i + 1))
+            continue
+        total_icons += len(page)
+        for j, item in enumerate(page):
+            if isinstance(item, str):
+                continue
+            if isinstance(item, dict):
+                if item.get("listType") == "folder":
+                    subs = item.get("iconLists")
+                    if not isinstance(subs, list) or not subs:
+                        problems.append("第 %d 页第 %d 项是文件夹但 iconLists 缺失/为空" % (i + 1, j + 1))
+                continue
+            problems.append("第 %d 页第 %d 项类型非法: %s" % (i + 1, j + 1, type(item).__name__))
+    if total_icons == 0:
+        problems.append("整份布局里一个图标/组件都没有（下发了等于清空主屏）")
+    return problems
+
+
+def backup_path_for(src):
+    """备份名带时间戳且绝不覆盖已有文件。"""
+    import time
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    base = "%s.bak.%s.plist" % (src, stamp)
+    n = 1
+    while os.path.exists(base):
+        n += 1
+        base = "%s.bak.%s-%d.plist" % (src, stamp, n)
+    return base
+
 
 async def cmd_backup(args):
     dest = os.path.abspath(args.output)
@@ -75,23 +113,41 @@ async def cmd_apply(args):
         with open(src, "rb") as f:
             new_layout = plistlib.load(f)
 
-    if not isinstance(new_layout, list):
-        print("❌ 无效的布局文件格式！根元素必须为页面列表 (list)。", file=sys.stderr)
+    problems = validate_layout(new_layout)
+    if problems:
+        print("❌ 布局文件未通过安全检查，拒绝下发：", file=sys.stderr)
+        for pr in problems[:8]:
+            print("   • " + pr, file=sys.stderr)
         sys.exit(1)
 
     print("🚀 正在通过 com.apple.springboardservices 下发并热更新主屏布局...")
     async with CoreDeviceSession(args.pairing) as s:
         sb = SpringBoardServicesService(s.rsd)
         before = await sb.get_icon_state()
-        bak = f"{args.input}.bak.plist"
+        bak = backup_path_for(src)
         with open(bak, "wb") as f:
             plistlib.dump(before, f)
         print(f"🛟 下发前已自动备份当前布局: {bak}")
 
-        await sb.set_icon_state(new_layout)
+        try:
+            await sb.set_icon_state(new_layout)
+        except Exception as e:
+            print(f"❌ 下发失败: {e}；正在尝试用备份回滚…", file=sys.stderr)
+            try:
+                await sb.set_icon_state(before)
+                print("🛟 已回滚到下发前的布局。", file=sys.stderr)
+            except Exception as e2:
+                print(f"⚠️  回滚也失败: {e2}；备份文件在 {bak}，可用 "
+                      f"cdtk-springboard apply {bak} 手动恢复。", file=sys.stderr)
+            return 1
 
-        # set_icon_state 不回包，只能回读比对；不一致就说明 SpringBoard 没接受
-        after = await sb.get_icon_state()
+        # set_icon_state 不回包，只能回读比对；SpringBoard 落盘有延迟，短轮询几次
+        after = None
+        for _ in range(5):
+            after = await sb.get_icon_state()
+            if after == new_layout:
+                break
+            await asyncio.sleep(0.4)
         if after == new_layout:
             print("🎉 桌面布局已生效（回读一致）。")
             return 0
@@ -105,7 +161,7 @@ async def cmd_apply(args):
 def main():
     parser = argparse.ArgumentParser(
         prog="cdtk-springboard",
-        description="cdtk-springboard: iOS 桌面图标与文件夹原子化管理工具"
+        description="cdtk-springboard: iOS 桌面图标与文件夹编排工具（可备份、可回读校验）"
     )
     parser.add_argument("--pairing", help="指定设备配对文件路径 (.plist)")
     subparsers = parser.add_subparsers(dest="cmd", required=True)

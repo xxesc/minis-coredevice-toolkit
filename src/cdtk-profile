@@ -122,16 +122,19 @@ async def cmd_install(args) -> int:
             installed = metadata[ident]
 
     print("\n" + "=" * 60)
-    print("🎉 描述文件下发成功！")
+    if installed:
+        print("🎉 描述文件已安装，且在系统列表中可见")
+    else:
+        print("📨 描述文件已下发，但系统列表里还查不到它")
     print(f"  • 名称:     {display_name}")
     print(f"  • 安装模式: {mode}")
     if installed:
         print(f"  • Identifier: {installed.get('PayloadIdentifier')}")
         print(f"  • UUID:       {installed.get('PayloadUUID')}")
     else:
-        print("  • 状态提示: 描述文件已送达系统安装队列。因属于个人非监管设备，请在「设置 ➔ 已下载描述文件」中输入一次密码以完成最终激活。")
+        print("  • 状态提示: 多半还在系统安装队列里。个人非监管设备需在「设置 ➔ 已下载描述文件」输一次密码完成激活；完成后用 cdtk-profile list 复核。")
     print("=" * 60)
-    return 0
+    return 0 if installed else 2
 
 async def cmd_remove(args) -> int:
     ident = args.identifier.strip()

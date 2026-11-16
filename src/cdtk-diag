@@ -26,7 +26,7 @@ async def get_device_metadata(rsd):
     except Exception:
         pass
     
-    device_name = vals.get("DeviceName") or getattr(rsd, "name", None) or "iPhone"
+    device_name = vals.get("DeviceName") or getattr(rsd, "name", None) or "(设备信息不可用)"
     product_type = vals.get("ProductType") or getattr(rsd, "product_type", "iPhone")
     product_ver = vals.get("ProductVersion") or getattr(rsd, "product_version", "未知")
     build_ver = vals.get("BuildVersion") or getattr(rsd, "product_build_version", "未知")
@@ -51,18 +51,22 @@ async def cmd_battery(args):
         meta = await get_device_metadata(s.rsd)
         diag = DiagnosticsService(s.rsd)
         data = await diag.get_battery()
+        if not data:
+            print("❌ 设备没有返回电池数据（诊断服务可能被系统拒绝）。", file=sys.stderr)
+            return 1
+        bdata = data.get("BatteryData") or {}
         
         cycle = data.get("CycleCount", "未知")
-        design_cap = data.get("BatteryData", {}).get("DesignCapacity") or data.get("DesignCapacity", "未知")
-        raw_max = data.get("BatteryData", {}).get("NominalChargeCapacity") or data.get("NominalChargeCapacity") or data.get("FullChargeCapacity", "未知")
+        design_cap = bdata.get("DesignCapacity") or data.get("DesignCapacity", "未知")
+        raw_max = bdata.get("NominalChargeCapacity") or data.get("NominalChargeCapacity") or data.get("FullChargeCapacity", "未知")
         cur_cap = data.get("CurrentCapacity", "未知")
-        voltage = data.get("Voltage") or data.get("AppleRawBatteryVoltage", 0)
+        voltage = _num(data.get("Voltage")) or _num(data.get("AppleRawBatteryVoltage")) or 0
         is_charging = data.get("IsCharging", False)
-        serial = data.get("Serial") or data.get("BatteryData", {}).get("Serial") or "未知"
-        temp = data.get("Temperature") or data.get("BatteryData", {}).get("Temperature")
+        serial = data.get("Serial") or bdata.get("Serial") or "未知"
+        temp = data.get("Temperature") or bdata.get("Temperature")
         temp_str = f"{temp / 100.0:.1f} °C" if isinstance(temp, (int, float)) and temp > 0 else "未知"
         
-        adapter = data.get("AdapterDetails", {})
+        adapter = data.get("AdapterDetails") or {}
         watts = adapter.get("Watts", "未知")
         desc = adapter.get("Description", "未知")
         volt = adapter.get("AdapterVoltage", 0) / 1000.0 if adapter.get("AdapterVoltage") else 0
@@ -83,7 +87,8 @@ async def cmd_battery(args):
         print(f"  • 出厂设计容量:     {design_cap} mAh")
         print(f"  • 当前实际物理容量: {raw_max} mAh (相对出厂: {health_pct})")
         print(f"  • 当前剩余电量:     {cur_cap}%")
-        print(f"  • 当前电芯电压:     {voltage / 1000.0:.3f} V")
+        print(f"  • 当前电芯电压:     {voltage / 1000.0:.3f} V" if isinstance(voltage, (int, float))
+              else "  • 当前电芯电压:     未知")
         if temp_str != "未知":
             print(f"  • 电芯温度:         {temp_str}")
         print(f"  • 充电状态:         {'⚡ 正在充电' if is_charging else '🔋 放电中'}")
@@ -123,12 +128,15 @@ async def cmd_perf(args):
         
         # 结合本地系统遥测
         dev_info = {}
+        telemetry_err = None
         try:
             res = subprocess.run(["apple-device", "info"], capture_output=True, text=True, timeout=3)
             if res.returncode == 0:
                 dev_info = json.loads(res.stdout).get("data", {})
-        except Exception:
-            pass
+            else:
+                telemetry_err = (res.stderr or "non-zero exit").strip()[:80]
+        except Exception as e:
+            telemetry_err = str(e)[:80]
 
         ram_total = dev_info.get("physical_memory_gb", 0)
         thermal = dev_info.get("thermal_state", "未知")
@@ -156,6 +164,8 @@ async def cmd_perf(args):
         if storage_line:
             print(storage_line)
         print("=" * 58)
+        if telemetry_err:
+            print(f"⚠️  宿主遥测不可用（{telemetry_err}），内存/存储/温控数据缺失。")
 
 async def cmd_syslog(args):
     print("⚡ 正在通过 CoreDevice RSD 连接 iOS 内核控制台 (syslog)...")
@@ -169,14 +179,17 @@ async def cmd_syslog(args):
         count = 0
         try:
             async for line in syslog.watch():
-                if args.filter and args.filter.lower() not in line.lower():
-                    continue
-                print(line)
-                count += 1
+                if isinstance(line, bytes):          # 非法 UTF-8 行会以 bytes 给出
+                    line = line.decode("utf-8", "replace")
+                # 退出条件必须放在过滤之前：否则 -f 一个不存在的关键字时永不退出
                 if args.limit and count >= args.limit:
                     break
                 if time.time() - start >= args.duration:
                     break
+                if args.filter and args.filter.lower() not in line.lower():
+                    continue
+                print(line)
+                count += 1
         except (KeyboardInterrupt, asyncio.CancelledError):
             pass
         print("-" * 60)

@@ -504,8 +504,25 @@ async def cmd_install(args):
             installer = InstallationProxyService(sess.rsd)
             print(f"⚡ 正在向系统发送安装指令 (Stream: {os.path.basename(final_ipa)})...")
             method = await push_install(installer, final_ipa)
-            print(f"🎉 安装完成（{method}）")
-            print(f"✨ 应用已成功部署至 iOS 系统桌面。")
+            # 实证校验：应用是否真的出现在设备应用列表里
+            expect_bid = getattr(args, "bundle_id", None) or inspect_ipa(final_ipa)[0]
+            try:
+                apps = await installer.get_apps(application_type="User",
+                                                 calculate_sizes=False)
+            except Exception as e:
+                print(f"🎉 安装指令已提交（{method}），但校验查询失败: {e}")
+                print("   请用 cdtk-install list 复核。")
+                return 0
+            if expect_bid and expect_bid in apps:
+                ver = apps[expect_bid].get("CFBundleShortVersionString", "")
+                print(f"🎉 安装完成（{method}），{expect_bid} v{ver} 已出现在设备应用列表")
+                print("✨ 应用已成功部署至 iOS 系统桌面。")
+            elif expect_bid:
+                print(f"⚠️  安装指令已提交（{method}），但应用列表里没查到 {expect_bid}。")
+                print("   可能仍在后台安装，请稍后用 cdtk-install list 复核。")
+                return 2
+            else:
+                print(f"🎉 安装指令已提交（{method}），但无法从 IPA 解析出 Bundle ID，跳过校验。")
     finally:
         if tmp_signed and os.path.exists(tmp_signed):
             try: os.unlink(tmp_signed)
@@ -524,7 +541,18 @@ async def cmd_uninstall(args):
         installer = InstallationProxyService(sess.rsd)
         print(f"⚡ 正在向系统发送卸载请求...")
         await installer.uninstall(args.bundle_id)
-        print(f"✅ 卸载完成！应用 {args.bundle_id} 及其沙盒容器已从设备移除。")
+        # 实证校验：应用是否真的从列表里消失
+        try:
+            apps = await installer.get_apps(application_type="Any",
+                                             calculate_sizes=False)
+        except Exception as e:
+            print(f"⚠️  卸载指令已发送，但校验查询失败: {e}；请用 cdtk-install list 复核。")
+            return 0
+        if args.bundle_id in apps:
+            print(f"⚠️  卸载指令已发送，但 {args.bundle_id} 仍在应用列表中（受系统管理？或正在移除）")
+            return 2
+        print(f"✅ 卸载完成：{args.bundle_id} 已不在设备应用列表中。")
+        return 0
 
 def main():
     parser = argparse.ArgumentParser(

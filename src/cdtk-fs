@@ -13,6 +13,13 @@ from coredevice_session import CoreDeviceSession
 from pymobiledevice3.services.afc import AfcService
 from pymobiledevice3.services.house_arrest import HouseArrestService
 
+def validate_bundle_id(bid):
+    import re
+    if not bid or not re.match(r"^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$", str(bid)):
+        raise SystemExit("❌ Bundle ID 不合法: %r（应形如 com.example.app）" % (bid,))
+    return bid
+
+
 async def get_app_service(rsd, bundle_id):
     first_err = None
     try:
@@ -36,14 +43,20 @@ async def get_app_service(rsd, bundle_id):
         await h.send_command(bundle_id, "VendDocuments")
         return h, "documents"
     except Exception as e:
-        raise RuntimeError(f"无法访问应用 {bundle_id} 的沙盒: {e}")
+        extra = f"（VendContainer 也失败: {first_err}）" if first_err else ""
+        raise RuntimeError(f"无法访问应用 {bundle_id} 的沙盒: {e}{extra}")
 
-async def _is_remote_dir(svc, remote_path):
+async def _remote_kind(svc, remote_path):
+    """返回 ("dir"|"file"|"unknown", 错误)。
+
+    不能像以前那样把 stat 失败当成"文件"：pymobiledevice3 的 pull 对目录是
+    递归整树下载，一次误判就会在本地写出一整棵目录。
+    """
     try:
         st = await svc.stat(remote_path)
-        return st.get("st_ifmt") == "S_IFDIR"
-    except Exception:
-        return False
+    except Exception as e:
+        return "unknown", e
+    return ("dir" if st.get("st_ifmt") == "S_IFDIR" else "file"), None
 
 def local_target(local_path, remote_path):
     """把目标归一化成"真正会被写入的路径"。目录型远端不支持导出（那是递归拉整棵目录）。"""
@@ -71,6 +84,9 @@ async def report_export(svc, local_path, remote_path):
     if want >= 0 and got != want:
         print("❌ 导出不完整：本地 %d 字节，远端 %d 字节" % (got, want), file=sys.stderr)
         return 1
+    if want < 0:
+        print("⚠️  导出完成但无法校验大小（远端 stat 失败）：%s (%d 字节)" % (local_path, got))
+        return 0
     print("✅ 导出成功！保存至本地: %s (%d 字节)" % (local_path, got))
     return 0
 
@@ -89,8 +105,8 @@ async def cmd_media_ls(args):
                 size = stat.get("st_size", 0)
                 icon = "📁" if is_dir else "📄"
                 print(f" {icon}  {item:<32} {'<DIR>' if is_dir else f'{size} B'}")
-            except Exception:
-                print(f" 📄  {item}")
+            except Exception as e:
+                print(f" ❓  {item:<32} (stat 失败: {type(e).__name__})")
         print("-" * 55)
 
 async def cmd_media_cat(args):
@@ -103,16 +119,32 @@ async def cmd_media_pull(args):
     print(f"⚡ 正在从媒体分区导出文件: {args.remote_path} -> {args.local_path}...")
     async with CoreDeviceSession() as s:
         afc = AfcService(s.rsd)
-        if await _is_remote_dir(afc, args.remote_path):
+        kind, err = await _remote_kind(afc, args.remote_path)
+        if kind == "dir":
             print("❌ 这是目录，不支持整目录导出: %s" % args.remote_path, file=sys.stderr)
             return 1
+        if kind == "unknown":
+            print("❌ 无法确认远端是文件还是目录（stat 失败: %s）；"
+                  "为免误触发递归下载，已中止。" % err, file=sys.stderr)
+            return 1
         dst = local_target(args.local_path, args.remote_path)
-        await afc.pull(args.remote_path, dst)
+        part = dst + ".part"
+        try:
+            await afc.pull(args.remote_path, part)
+            os.replace(part, dst)
+        except Exception:
+            if os.path.exists(part):
+                try:
+                    os.remove(part)
+                except OSError:
+                    pass
+            raise
         return await report_export(afc, dst, args.remote_path)
 
 async def cmd_app_ls(args):
     print(f"⚡ 正在穿透应用沙盒: {args.bundle_id}...")
     async with CoreDeviceSession() as s:
+        validate_bundle_id(args.bundle_id)
         h, mode = await get_app_service(s.rsd, args.bundle_id)
         target_path = args.path or ("/" if mode == "container" else "/Documents")
         items = await h.listdir(target_path)
@@ -125,23 +157,40 @@ async def cmd_app_ls(args):
                 size = stat.get("st_size", 0)
                 icon = "📁" if is_dir else "📄"
                 print(f" {icon}  {item:<32} {'<DIR>' if is_dir else f'{size} B'}")
-            except Exception:
-                print(f" 📄  {item}")
+            except Exception as e:
+                print(f" ❓  {item:<32} (stat 失败: {type(e).__name__})")
         print("-" * 55)
 
 async def cmd_app_pull(args):
     print(f"⚡ 正在从应用沙盒导出: {args.bundle_id}:{args.remote_path} -> {args.local_path}...")
     async with CoreDeviceSession() as s:
+        validate_bundle_id(args.bundle_id)
         h, _ = await get_app_service(s.rsd, args.bundle_id)
-        if await _is_remote_dir(h, args.remote_path):
+        kind, err = await _remote_kind(h, args.remote_path)
+        if kind == "dir":
             print("❌ 这是目录，不支持整目录导出: %s" % args.remote_path, file=sys.stderr)
             return 1
+        if kind == "unknown":
+            print("❌ 无法确认远端是文件还是目录（stat 失败: %s）；"
+                  "为免误触发递归下载，已中止。" % err, file=sys.stderr)
+            return 1
         dst = local_target(args.local_path, args.remote_path)
-        await h.pull(args.remote_path, dst)
+        part = dst + ".part"
+        try:
+            await h.pull(args.remote_path, part)
+            os.replace(part, dst)
+        except Exception:
+            if os.path.exists(part):
+                try:
+                    os.remove(part)
+                except OSError:
+                    pass
+            raise
         return await report_export(h, dst, args.remote_path)
 
 async def cmd_app_cat(args):
     async with CoreDeviceSession() as s:
+        validate_bundle_id(args.bundle_id)
         h, _ = await get_app_service(s.rsd, args.bundle_id)
         data = await h.get_file_contents(args.remote_path)
         sys.stdout.buffer.write(data)
