@@ -96,7 +96,7 @@ cp -f "$SCRIPT_DIR/cdtk_frames.py" "$SP_DIR/"
 # 6. 注册 CLI。
 echo "🔧 注册全局 CLI 命令 (cdtk-*)..."
 mkdir -p /usr/local/bin
-for tool in cdtk-install cdtk-ctrl cdtk-profile cdtk-fs cdtk-diag cdtk-crash cdtk-inspect cdtk-springboard cdtk-proc cdtk-doctor cdtk-notify; do
+for tool in cdtk-install cdtk-ctrl cdtk-profile cdtk-fs cdtk-diag cdtk-crash cdtk-inspect cdtk-springboard cdtk-proc cdtk-doctor; do
   if [ -f "$SCRIPT_DIR/$tool" ]; then
     chmod +x "$SCRIPT_DIR/$tool"
     if [ "$LINK_MODE" -eq 1 ]; then
