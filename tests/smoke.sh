@@ -119,18 +119,16 @@ PY
 #    技能布局（<skill>/scripts/）没有 setup.sh，这一项无从比较，跳过。
 if [ -f "$SRC/setup.sh" ]; then
 setup_tools=$(sed -n 's/^for tool in //p' "$SRC/setup.sh" | sed 's/;.*//' | tr ' ' '\n' | grep '^cdtk-' | sort -u)
-# 只认「表格首列就是一个裸工具名」的行。旧写法会把 `cdtk-ctrl launch`
-# 这种带参数的示例行整行当成工具名（正则匹配到空格就失败、行原样留下）。
-# 工具名有两种写法：README 用表格首列，SKILL.md 用 `### N. \`cdtk-xxx\`` 标题。
-doc_tools=$( { grep -hE '^\| `cdtk-[a-z]+`' $DOCS | sed -E 's/^\| `(cdtk-[a-z]+)`.*/\1/'
-               grep -hE '^#+ .*`cdtk-[a-z]+`' $DOCS | grep -oE '`cdtk-[a-z]+`' | tr -d '`'
-             } | sort -u)
-if [ "$setup_tools" = "$doc_tools" ]; then
-    say "tool list: setup.sh == docs" "ok"
+# 检查的是「注册 == 实现」，不再从 README 的工具表格里取名单：README 现在只讲
+# 这是什么 / 原理 / 前置条件 / 安装，工具清单进了 `cdtk-* --help`。少装一个脚本或
+# setup.sh 漏注册一个，这项都会 FAIL。
+src_tools=$(for f in "$SRC"/cdtk-*; do [ -f "$f" ] && basename "$f"; done | sort -u)
+if [ "$setup_tools" = "$src_tools" ]; then
+    say "tool list: setup.sh == src/" "ok"
 else
-    say "tool list: setup.sh == docs" "FAIL"
-    printf '  only in setup.sh: %s\n' "$(printf '%s\n' $setup_tools | grep -vxF "$(printf '%s\n' $doc_tools)" | tr '\n' ' ')"
-    printf '  only in docs:     %s\n' "$(printf '%s\n' $doc_tools | grep -vxF "$(printf '%s\n' $setup_tools)" | tr '\n' ' ')"
+    say "tool list: setup.sh == src/" "FAIL"
+    printf '  only in setup.sh: %s\n' "$(printf '%s\n' $setup_tools | grep -vxF "$(printf '%s\n' $src_tools)" | tr '\n' ' ')"
+    printf '  only in src/:     %s\n' "$(printf '%s\n' $src_tools | grep -vxF "$(printf '%s\n' $setup_tools)" | tr '\n' ' ')"
     fail=1
 fi
 else
@@ -182,20 +180,17 @@ sys.exit(bad)
 PY
 
 # 5. Q5 的归因不能退回旧说法：必须点明是 kill_existing 主动终止，且与 Q2 的并发互踢分开。
-python3 - "$REPO" <<'PYEOF' || fail=1
+#    Q5 正文现在活在 references/TROUBLESHOOTING*.md，README 只剩四节简介，
+#    所以按「全部文档」查：正确说法必须在某处，旧说法必须哪儿都没有。
+python3 - $DOCS <<'PYEOF' || fail=1
 import sys, pathlib
-repo = pathlib.Path(sys.argv[1])
-checks = []
-for name, bad_phrase in [
-    ("README_zh", "对宿主自己调用会触发系统终止"),
-    ("README", "calling it on the host itself triggers the termination"),
-]:
-    doc = repo / (name + ".md")
-    if not doc.exists():          # 技能布局只有 SKILL.md，没有 README
-        continue
-    text = doc.read_text(encoding="utf-8")
-    checks.append((f"q5 cause: {name}.md", "kill_existing" in text and "--no-kill" in text and "Q2" in text))
-    checks.append((f"q5 no old wording: {name}.md", bad_phrase not in text))
+docs = [pathlib.Path(p) for p in sys.argv[1:]]
+text = "".join(p.read_text(encoding="utf-8") for p in docs)
+checks = [
+    ("q5 cause: docs", "kill_existing" in text and "--no-kill" in text and "Q2" in text),
+    ("q5 no old wording (zh)", "对宿主自己调用会触发系统终止" not in text),
+    ("q5 no old wording (en)", "calling it on the host itself triggers the termination" not in text),
+]
 bad = 0
 for name, ok in checks:
     print(name.ljust(58) + ("ok" if ok else "FAIL"))
