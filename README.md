@@ -130,8 +130,9 @@ Limits:
 - **Icon-only buttons** (back, more options, copy, send) have no text, so measure with `grid` and use `press --at`.
 - **`input` auto-routes to the clipboard.** Any text containing a space or non-ASCII goes straight to paste.
   Keyboard input gets rewritten by the IME — pinyin eats the space as "confirm candidate" (`minis skills` →
-  `minisskills`) and converts valid-pinyin letters to Han characters; a third-party IME's English QWERTY mode
-  swallowed the space too. `--no-paste` forces the keyboard.
+  `minisskills`) and converts valid-pinyin letters to Han characters. Controlled comparison: the same `minis skills`
+  lost its space under the Doubao IME's English QWERTY mode, while Apple's built-in English (US) kept it intact —
+  so this is a third-party IME problem, not a protocol or injection one. `--no-paste` forces the keyboard.
 - **A third-party IME may intercept `Cmd+V` as well.** Measured with Doubao IME: the pasted text landed in its
   own clipboard strip and the field stayed empty. `paste` now reads the screen back and fails loudly instead of
   claiming success; switch to the system keyboard when that happens.
