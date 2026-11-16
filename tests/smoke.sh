@@ -115,7 +115,7 @@ for doc in docs:
 sys.exit(bad)
 PY
 
-# 3. The tools setup.sh registers == the tools the docs list in a table.
+# 3. The tools setup.sh registers == the tools actually implemented in src/.
 #    技能布局（<skill>/scripts/）没有 setup.sh，这一项无从比较，跳过。
 if [ -f "$SRC/setup.sh" ]; then
 setup_tools=$(sed -n 's/^for tool in //p' "$SRC/setup.sh" | sed 's/;.*//' | tr ' ' '\n' | grep '^cdtk-' | sort -u)
