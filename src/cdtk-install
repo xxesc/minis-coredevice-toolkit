@@ -315,7 +315,9 @@ def _ext_entitlements(ents, old_main_bid, new_main_bid, ext_bid):
 
     两条路线（与 Sideloadly/爱思等主流重签工具一致）：
     * profile 是通配（application-identifier 以 .* 结尾）→ 展开成 <Team>.<ext_bid>；
-    * profile 是精确 App ID → 原样保留 profile 值（否则扩展永远配不上）。
+    * profile 是精确 App ID → 原样保留 profile 值（实测 iOS 安装校验接受：
+      它只查「扩展 ID 以主 App ID 为前缀」和「entitlements 被 profile 覆盖」，
+      不查 application-identifier 是否等于扩展自身 ID）。
     keychain 组同样处理：能映射的就映射，通配保留。
     """
     import copy
@@ -389,12 +391,13 @@ def sign_ipa_rcodesign(src_ipa, dest_ipa, p12, prov, pwd, bundle_id=None, app_na
         pem_path = Path(td, "_cdtk_signing.pem")
         _export_signing_pem(p12, pwd, pem_path)
 
-        # 嵌套 bundle（扩展 / Watch App）：各自改 Bundle ID、按自己的身份签名。
-        # 以前把主 App entitlements 原样套给扩展：通配 profile 能碰巧过，
-        # 精确 App ID profile（签名平台那类）则直接 0xe8008016 / 90035。
+        # 嵌套 bundle（扩展 / Watch App）：Bundle ID 跟随主 App 改前缀（硬规则），
+        # entitlements 以 profile 为准（精确 App ID 时就是 profile 原值）。
+        # 真正致命的是「扩展 ID 没跟着改前缀」——iOS 安装时校验的是前缀链，
+        # 不要求扩展的 application-identifier 等于它自己的 ID（那条只在 App Store 上传时严查）。
         nested = _nested_bundles(app)
         if nested:
-            print(f"📦 检测到 {len(nested)} 个嵌套 bundle：逐个按自身身份处理")
+            print(f"📦 检测到 {len(nested)} 个嵌套 bundle：同步改前缀 + 按 profile 分配 entitlements")
         for rel in nested:
             nb = app / rel
             nb_info_path = nb / "Info.plist"
