@@ -304,6 +304,51 @@ def _zip_preserve(src_dir, dest_ipa, skip=()):
                     z.write(full, rel)
 
 
+def _team_prefix(ents):
+    """从 profile 的 application-identifier 里取 TeamID（TeamID 不含点）。"""
+    aid = ents.get("application-identifier", "")
+    return aid.split(".", 1)[0] if aid else ""
+
+
+def _ext_entitlements(ents, old_main_bid, new_main_bid, ext_bid):
+    """为嵌套 bundle 生成 entitlements。
+
+    两条路线（与 Sideloadly/爱思等主流重签工具一致）：
+    * profile 是通配（application-identifier 以 .* 结尾）→ 展开成 <Team>.<ext_bid>；
+    * profile 是精确 App ID → 原样保留 profile 值（否则扩展永远配不上）。
+    keychain 组同样处理：能映射的就映射，通配保留。
+    """
+    import copy
+    e = copy.deepcopy(ents)
+    team = _team_prefix(ents)
+    aid = ents.get("application-identifier")
+    if aid and aid.endswith(".*"):
+        if team and ext_bid:
+            e["application-identifier"] = f"{team}.{ext_bid}"
+    groups = e.get("keychain-access-groups")
+    if isinstance(groups, list) and old_main_bid and new_main_bid and new_main_bid != old_main_bid:
+        out = []
+        for g in groups:
+            if isinstance(g, str) and g.startswith(f"{team}.{old_main_bid}"):
+                out.append(f"{team}.{new_main_bid}" + g[len(f"{team}.{old_main_bid}"):])
+            else:
+                out.append(g)
+        e["keychain-access-groups"] = out
+    return e
+
+
+def _nested_bundles(app):
+    """枚举主 App 里的嵌套 bundle（扩展 / Watch App 等），返回相对 app 根的路径。"""
+    out = []
+    for sub in ("PlugIns", "Watch"):
+        d = app / sub
+        if d.is_dir():
+            for p in sorted(d.rglob("*")):
+                if p.is_dir() and (p.suffix in (".appex", ".app")):
+                    out.append(p.relative_to(app).as_posix())
+    return out
+
+
 def sign_ipa_rcodesign(src_ipa, dest_ipa, p12, prov, pwd, bundle_id=None, app_name=None):
     """用 rcodesign 签名：解包 -> 换描述文件 -> 签名 bundle -> 重打包。"""
     rc = _find_rcodesign()
@@ -344,15 +389,39 @@ def sign_ipa_rcodesign(src_ipa, dest_ipa, p12, prov, pwd, bundle_id=None, app_na
         pem_path = Path(td, "_cdtk_signing.pem")
         _export_signing_pem(p12, pwd, pem_path)
 
-        nested = sorted(p for p in (app / "PlugIns").glob("*") if p.is_dir()) if (app / "PlugIns").is_dir() else []
+        # 嵌套 bundle（扩展 / Watch App）：各自改 Bundle ID、按自己的身份签名。
+        # 以前把主 App entitlements 原样套给扩展：通配 profile 能碰巧过，
+        # 精确 App ID profile（签名平台那类）则直接 0xe8008016 / 90035。
+        nested = _nested_bundles(app)
+        if nested:
+            print(f"📦 检测到 {len(nested)} 个嵌套 bundle：逐个按自身身份处理")
+        for rel in nested:
+            nb = app / rel
+            nb_info_path = nb / "Info.plist"
+            if not nb_info_path.exists():
+                print(f"   ⚠️ {rel} 没有 Info.plist，跳过", file=sys.stderr)
+                continue
+            nb_info = plistlib.loads(nb_info_path.read_bytes())
+            old_ext_bid = nb_info.get("CFBundleIdentifier", "")
+            new_ext_bid = old_ext_bid
+            if bundle_id and old_bid and old_ext_bid.startswith(old_bid):
+                new_ext_bid = bundle_id + old_ext_bid[len(old_bid):]
+            if new_ext_bid != old_ext_bid:
+                nb_info["CFBundleIdentifier"] = new_ext_bid
+                nb_info_path.write_bytes(
+                    plistlib.dumps(nb_info, fmt=plistlib.FMT_BINARY))
+                print(f"   🔧 {rel}: {old_ext_bid} -> {new_ext_bid}")
+            ent_n = Path(td, "_cdtk_ent_%s.plist" % rel.replace("/", "_"))
+            ent_n.write_bytes(plistlib.dumps(
+                _ext_entitlements(ents, old_bid, bundle_id or old_bid, new_ext_bid),
+                fmt=plistlib.FMT_XML))
+            shutil.copyfile(prov, nb / "embedded.mobileprovision")
+
         cmd = [rc, "sign", "--pem-source", str(pem_path),
                "--entitlements-xml-file", str(main_ent)]
-        for nb in nested:
-            ent_n = Path(td, "_cdtk_ent_%s.plist" % nb.name.replace("/", "_"))
-            ent_n.write_bytes(plistlib.dumps(ents, fmt=plistlib.FMT_XML))
-            cmd += ["--entitlements-xml-file", "PlugIns/%s:%s" % (nb.name, ent_n)]
-        if nested:
-            print(f"📦 检测到 {len(nested)} 个嵌套 bundle：逐个套用 profile entitlements（scoped）")
+        for rel in nested:
+            ent_n = Path(td, "_cdtk_ent_%s.plist" % rel.replace("/", "_"))
+            cmd += ["--entitlements-xml-file", "%s:%s" % (rel, ent_n)]
         print("✍️  正在使用 rcodesign 进行代码签名...")
         cmd.append(str(app))
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
