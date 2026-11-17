@@ -20,7 +20,40 @@ from pathlib import Path, PurePosixPath
 from coredevice_session import CoreDeviceSession
 from pymobiledevice3.services.installation_proxy import InstallationProxyService
 
-async def push_install(installer, ipa_path: str):
+STREAM_THRESHOLD = 256 * 1024 * 1024   # 超过 256MB 走流式，避免整包进内存
+
+
+async def streaming_install(installer, rsd, ipa_path: str) -> str:
+    """AFC 分块上传到 /PublicStaging，再让 installation_proxy 按设备侧路径安装。
+
+    大 IPA 走 install_from_local 会把整包 read_bytes() 进内存（iSH 上直接 OOM），
+    这里改走 AfcService.push（>4MB 自动分块） + send_package(PackagePath)。
+    """
+    from pymobiledevice3.services.afc import AfcService
+
+    afc = AfcService(rsd)
+    name = os.path.basename(ipa_path)
+    remote = "/PublicStaging/" + name
+    size_mb = os.path.getsize(ipa_path) / 1e6
+    print(f"📤 流式上传 {size_mb:.1f} MB → {remote}（不占内存）…")
+    await afc.push(ipa_path, remote, progress_bar=False)
+    print("📦 上传完成，开始安装…")
+    try:
+        await installer.send_package("Install", {}, None, remote)
+    finally:
+        for meth in ("rm", "remove", "unlink"):
+            fn = getattr(afc, meth, None)
+            if fn is None:
+                continue
+            try:
+                await fn(remote)
+            except Exception:
+                pass
+            break
+    return "Install(AFC 流式上传)"
+
+
+async def push_install(installer, ipa_path: str, rsd=None):
     """
     跨版本兼容的 installation_proxy 安装调用。
 
@@ -29,6 +62,19 @@ async def push_install(installer, ipa_path: str):
     /PublicStaging/pymobiledevice3 再走 send_package，失败时抛 AppInstallError。
     这里按能力探测，两种接口都支持，避免 SDK 一升级工具就直接 AttributeError。
     """
+    size = None
+    try:
+        size = os.path.getsize(ipa_path)
+    except OSError:
+        pass
+
+    if rsd is not None and size and size > STREAM_THRESHOLD:
+        try:
+            return await streaming_install(installer, rsd, ipa_path)
+        except Exception as e:
+            print(f"⚠️  流式安装失败（{e}），回退到整包安装；大文件可能内存不足。",
+                  file=sys.stderr)
+
     fn = getattr(installer, "install_from_local", None)
     if fn is not None:
         await fn(Path(ipa_path), "Install")
@@ -525,7 +571,7 @@ async def cmd_install(args):
         async with CoreDeviceSession() as sess:
             installer = InstallationProxyService(sess.rsd)
             print(f"⚡ 正在向系统发送安装指令 (Stream: {os.path.basename(final_ipa)})...")
-            method = await push_install(installer, final_ipa)
+            method = await push_install(installer, final_ipa, rsd=sess.rsd)
             # 实证校验：应用是否真的出现在设备应用列表里
             expect_bid = getattr(args, "bundle_id", None) or inspect_ipa(final_ipa)[0]
             try:
