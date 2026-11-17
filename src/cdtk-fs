@@ -195,6 +195,92 @@ async def cmd_app_cat(args):
         data = await h.get_file_contents(args.remote_path)
         sys.stdout.buffer.write(data)
 
+
+PROTECTED = {"/", "/Documents", "/Library", "/tmp", "/SystemData"}
+
+
+def _check_writable(remote_path):
+    """拒绝写容器根与顶层目录：任何一次手滑都不可逆。"""
+    p = "/" + str(remote_path).strip("/")
+    if p in PROTECTED or str(remote_path).rstrip("/") in PROTECTED:
+        raise SystemExit(f"❌ 拒绝写入受保护的容器路径: {remote_path}")
+    return str(remote_path)
+
+
+async def _write_bytes(args, data):
+    remote = _check_writable(args.remote_path)
+    print(f"⚡ 写入应用沙盒: {args.bundle_id}:{remote} ({len(data)} B)…", file=sys.stderr)
+    async with CoreDeviceSession() as s:
+        validate_bundle_id(args.bundle_id)
+        h, _ = await get_app_service(s.rsd, args.bundle_id)
+        kind, err = await _remote_kind(h, remote)
+        if kind == "dir":
+            print("❌ 远端是目录，拒绝覆盖", file=sys.stderr)
+            return 1
+        backup = None
+        if kind == "file" and not args.no_backup:
+            try:
+                old = await h.get_file_contents(remote)
+                backup = f"/tmp/cdtk-backup-{os.path.basename(remote)}-{int(asyncio.get_event_loop().time())}.bak"
+                with open(backup, "wb") as f:
+                    f.write(old)
+            except Exception as e:
+                print(f"⚠️  无法备份原内容（继续写入）: {e}", file=sys.stderr)
+        await h.set_file_contents(remote, data)
+        back = await h.get_file_contents(remote)
+        ok = back == data
+        print(f"{'✅' if ok else '⚠️'} 写入完成，回读 {'一致' if ok else '不一致'}")
+        if backup:
+            print(f"📦 原内容备份: {backup}")
+        return 0 if ok else 1
+
+
+async def cmd_app_push(args):
+    if not os.path.isfile(args.local_path):
+        print(f"❌ 本地文件不存在: {args.local_path}", file=sys.stderr)
+        return 1
+    with open(args.local_path, "rb") as f:
+        data = f.read()
+    return await _write_bytes(args, data)
+
+
+async def cmd_app_put(args):
+    data = sys.stdin.buffer.read()
+    if args.text is not None:
+        data = args.text.encode("utf-8")
+    return await _write_bytes(args, data)
+
+
+async def cmd_app_mkdir(args):
+    remote = _check_writable(args.remote_path)
+    async with CoreDeviceSession() as s:
+        validate_bundle_id(args.bundle_id)
+        h, _ = await get_app_service(s.rsd, args.bundle_id)
+        await h.makedirs(remote)
+        st = await h.stat(remote)
+        print(f"✅ 目录已就绪: {remote} ({st.get('st_ifmt')})")
+    return 0
+
+
+async def cmd_app_rm(args):
+    remote = _check_writable(args.remote_path)
+    async with CoreDeviceSession() as s:
+        validate_bundle_id(args.bundle_id)
+        h, _ = await get_app_service(s.rsd, args.bundle_id)
+        kind, err = await _remote_kind(h, remote)
+        if kind == "unknown":
+            print(f"❌ 无法确认远端存在与类型（stat 失败: {err}），已中止", file=sys.stderr)
+            return 1
+        if kind == "dir" and not args.recursive:
+            print("❌ 这是目录；递归删除请显式加 --recursive", file=sys.stderr)
+            return 1
+        deleted = await h.rm(remote)
+        gone = not await h.exists(remote)
+        print(("✅ 已删除: " if gone else "⚠️ 删除后仍存在: ") + remote)
+        if deleted:
+            print(f"   AFC 报告移除 {len(deleted)} 项")
+    return 0
+
 def main():
     parser = argparse.ArgumentParser(description="cdtk-fs: iOS 原生沙盒穿透与媒体分区文件管理工具")
     subparsers = parser.add_subparsers(dest="target", required=True)
@@ -223,6 +309,23 @@ def main():
     a_pull.add_argument("bundle_id", help="应用 Bundle Identifier")
     a_pull.add_argument("remote_path", help="沙盒文件路径")
     a_pull.add_argument("local_path", help="本地保存路径")
+    a_push = a_sub.add_parser("push", help="把本地文件写入应用沙盒（覆盖前自动备份到 /tmp）")
+    a_push.add_argument("bundle_id", help="应用 Bundle Identifier")
+    a_push.add_argument("local_path", help="本地文件路径")
+    a_push.add_argument("remote_path", help="沙盒目标路径（如 /Documents/conf.json）")
+    a_push.add_argument("--no-backup", action="store_true", help="覆盖前不备份原内容")
+    a_put = a_sub.add_parser("put", help="把 stdin 或 --text 写入应用沙盒文件")
+    a_put.add_argument("bundle_id", help="应用 Bundle Identifier")
+    a_put.add_argument("remote_path", help="沙盒目标路径")
+    a_put.add_argument("--text", help="直接给出的文本内容（省略则读 stdin）")
+    a_put.add_argument("--no-backup", action="store_true", help="覆盖前不备份原内容")
+    a_mkdir = a_sub.add_parser("mkdir", help="在应用沙盒内创建目录")
+    a_mkdir.add_argument("bundle_id", help="应用 Bundle Identifier")
+    a_mkdir.add_argument("remote_path", help="沙盒目录路径")
+    a_rm = a_sub.add_parser("rm", help="删除应用沙盒内的文件或目录")
+    a_rm.add_argument("bundle_id", help="应用 Bundle Identifier")
+    a_rm.add_argument("remote_path", help="沙盒路径")
+    a_rm.add_argument("--recursive", action="store_true", help="目录递归删除")
 
     args = parser.parse_args()
 
@@ -234,6 +337,10 @@ def main():
         if args.subaction == "ls": sys.exit(asyncio.run(cmd_app_ls(args)))
         elif args.subaction == "cat": sys.exit(asyncio.run(cmd_app_cat(args)))
         elif args.subaction == "pull": sys.exit(asyncio.run(cmd_app_pull(args)))
+        elif args.subaction == "push": sys.exit(asyncio.run(cmd_app_push(args)))
+        elif args.subaction == "put": sys.exit(asyncio.run(cmd_app_put(args)))
+        elif args.subaction == "mkdir": sys.exit(asyncio.run(cmd_app_mkdir(args)))
+        elif args.subaction == "rm": sys.exit(asyncio.run(cmd_app_rm(args)))
 
 if __name__ == "__main__":
     try:
