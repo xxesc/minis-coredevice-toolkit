@@ -11,3 +11,11 @@ cdtk.tgz
 pairing*.plist
 rp_pairing_file.plist
 .DS_Store
+
+# 测试/签名产物（绝不入库）
+*.ipa
+*.mobileconfig
+*pwd*.txt
+.tg_env
+*.session
+.env
